@@ -1,0 +1,83 @@
+name: integration test (deterministic, model-free)
+
+# Proves the real nanocodex path end to end without any LLM:
+#   test -> codex-app-server -> per-thread mcp-v8 -> run_js
+# codex is pointed at a scripted fake Responses-API server (fakemodel.py), so
+# tool calls and their outputs are deterministic. A second job exercises mcp-v8
+# directly (adds the S3/MinIO durability tier).
+
+on:
+  push:
+    branches: [claude/integration-test]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: integration-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── Primary: full path through codex + a deterministic fake model ─────────
+  codex-path:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: pull pinned image
+        run: docker pull ghcr.io/r33drichards/nanocodex:d09737542e45304e0e6a303a9bde7046d81963f4
+
+      - name: install client
+        run: |
+          python3 -m venv client/.venv
+          client/.venv/bin/pip install -e client/
+
+      - name: bring up stack (codex + fakemodel)
+        working-directory: integration
+        run: docker compose -p nanocodex-itest-codex -f docker-compose.codex.yml up -d --wait
+
+      - name: run test
+        env:
+          NANOCODEX_URL: ws://127.0.0.1:4510
+        run: client/.venv/bin/python integration/test_codex_integration.py
+
+      - name: logs on failure
+        if: failure()
+        working-directory: integration
+        run: docker compose -p nanocodex-itest-codex -f docker-compose.codex.yml logs
+
+      - name: tear down
+        if: always()
+        working-directory: integration
+        run: docker compose -p nanocodex-itest-codex -f docker-compose.codex.yml down -v --remove-orphans
+
+  # ── Supplementary: mcp-v8 direct, incl. durable S3/MinIO tier ─────────────
+  mcp-v8-direct:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: pull pinned image
+        run: docker pull ghcr.io/r33drichards/nanocodex:d09737542e45304e0e6a303a9bde7046d81963f4
+
+      - name: bring up stack (mcp-v8 dir + s3 + minio)
+        working-directory: integration
+        run: docker compose -p nanocodex-itest -f docker-compose.yml up -d --wait mcpv8-dir mcpv8-s3
+
+      - name: run test
+        run: python3 integration/test_integration.py
+
+      - name: logs on failure
+        if: failure()
+        working-directory: integration
+        run: docker compose -p nanocodex-itest -f docker-compose.yml logs
+
+      - name: tear down
+        if: always()
+        working-directory: integration
+        run: docker compose -p nanocodex-itest -f docker-compose.yml down -v --remove-orphans

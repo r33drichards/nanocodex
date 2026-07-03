@@ -1,0 +1,29 @@
+# codex-app-server config for the deterministic integration test.
+#
+# Mounted over /codex-home/config.toml in the codex container. Identical tool
+# lockdown to the production config, but the model provider points at the
+# fake Responses-API server (integration/fakemodel.py) instead of Azure/OpenAI,
+# so no real model or API key is involved.
+
+approval_policy = "never"
+sandbox_mode = "read-only"
+
+model_provider = "test"
+model = "gpt-5.4"
+
+# The fake speaks the OpenAI Responses API (wire_api = "responses"). codex POSTs
+# to <base_url>/responses; base_url therefore ends in /v1. env_key must name a
+# set env var (value is irrelevant — the fake ignores auth); the codex container
+# sets TEST_MODEL_KEY=dummy.
+[model_providers.test]
+name = "test"
+base_url = "http://fakemodel:9099/v1"
+env_key = "TEST_MODEL_KEY"
+wire_api = "responses"
+request_max_retries = 0
+stream_max_retries = 0
+
+[features]
+shell_tool = false
+apply_patch_tool = false
+view_image_tool = false

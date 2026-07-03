@@ -1,0 +1,56 @@
+# Full-path, model-free integration stack:
+#
+#   test  ──ws──►  codex-app-server  ──stdio MCP──►  per-thread mcp-v8 ──► run_js
+#                        │
+#                        └── Responses API ──► fakemodel (deterministic mock)
+#
+# codex runs FOR REAL (its per-thread mcp-v8 sandbox actually executes run_js);
+# only the "LLM" is faked, so tool calls and their outputs are deterministic.
+#
+# Distinct project name + non-default host port (4510) so it won't collide with
+# a local nanocodex stack (which uses 4500).
+x-image: &image ghcr.io/r33drichards/nanocodex:d09737542e45304e0e6a303a9bde7046d81963f4
+
+services:
+  # Deterministic fake OpenAI Responses API server (Python stdlib, no deps).
+  fakemodel:
+    image: python:3.12-slim
+    container_name: nanocodex-itest-fakemodel
+    working_dir: /app
+    volumes:
+      - ./fakemodel.py:/app/fakemodel.py:ro
+    command: ["python3", "/app/fakemodel.py"]
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; urllib.request.urlopen('http://127.0.0.1:9099/v1/models', timeout=3); sys.exit(0)"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # codex app-server, pinned image, default entrypoint. Config is overridden to
+  # point the model provider at fakemodel; tool lockdown is preserved.
+  codex:
+    image: *image
+    container_name: nanocodex-itest-codex
+    depends_on:
+      fakemodel:
+        condition: service_healthy
+    environment:
+      TEST_MODEL_KEY: dummy
+      RUST_LOG: ${RUST_LOG:-info}
+    volumes:
+      - ./codex-config.test.toml:/codex-home/config.toml:ro
+    secrets:
+      - ws_token
+    ports:
+      - "4510:4500"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:4500/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+secrets:
+  ws_token:
+    file: ../secrets/ws-token
+
+volumes: {}

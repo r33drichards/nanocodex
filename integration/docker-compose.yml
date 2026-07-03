@@ -1,0 +1,90 @@
+# Deterministic, model-free integration stack for mcp-v8 (the per-thread V8
+# sandbox that nanocodex runs). Nothing here talks to the codex app-server or an
+# LLM: the test drives mcp-v8's REST sidecar (`/api/exec`) directly.
+#
+# Distinct project name + non-default host ports so it never collides with a
+# local nanocodex / mcp-js stack. Bring it up with:
+#   docker compose -p nanocodex-itest -f integration/docker-compose.yml up -d
+#
+# Pinned, public, multi-arch image — do NOT rebuild from source.
+x-image: &image ghcr.io/r33drichards/nanocodex:d09737542e45304e0e6a303a9bde7046d81963f4
+
+services:
+  # ── Tiers 1 & 2: run_js determinism + stateful heap across calls ──────────
+  # Node-local (`--heap-store dir`) heap persistence. Session auto-restores the
+  # session's most-recent output heap, so `globalThis.x` set in one call is
+  # visible in the next call with the same ?session=.
+  mcpv8-dir:
+    image: *image
+    container_name: nanocodex-itest-mcpv8-dir
+    entrypoint: /usr/local/bin/mcp-v8
+    command:
+      - --http-port=8080
+      - --heap-store=dir
+      - --heap-dir=/tmp/h
+      - --session-db-path=/tmp/s
+    ports:
+      - "4599:8080"
+
+  # ── Object storage backing the durable/S3 tier ───────────────────────────
+  minio:
+    image: minio/minio
+    container_name: nanocodex-itest-minio
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "4590:9000"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # One-shot: create the bucket mcp-v8 writes heap/fs blobs into.
+  minio-init:
+    image: minio/mc
+    container_name: nanocodex-itest-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      sh -c "
+      mc alias set local http://minio:9000 minioadmin minioadmin &&
+      mc mb -p local/mcpv8 &&
+      mc ls local
+      "
+
+  # ── Tier 3: durable / resumable state via S3 (MinIO) ──────────────────────
+  # Heap + fs blobs live in object storage; the session log (session->heap key
+  # map) lives on a named volume so a container restart keeps the same session
+  # identity while the heap bytes are re-fetched from S3. MinIO needs path-style
+  # addressing (AWS_S3_FORCE_PATH_STYLE=true) or every save fails with
+  # "Error saving heap: dispatch failure".
+  mcpv8-s3:
+    image: *image
+    container_name: nanocodex-itest-mcpv8-s3
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+    entrypoint: /usr/local/bin/mcp-v8
+    command:
+      - --http-port=8080
+      - --heap-store=s3
+      - --fs-store=s3
+      - --s3-bucket=mcpv8
+      - --session-db-path=/sessdb
+    environment:
+      AWS_ENDPOINT_URL: http://minio:9000
+      AWS_S3_FORCE_PATH_STYLE: "true"
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_REGION: us-east-1
+    volumes:
+      - sessdb:/sessdb
+    ports:
+      - "4591:8080"
+
+volumes:
+  sessdb:
