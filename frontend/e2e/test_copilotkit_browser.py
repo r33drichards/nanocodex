@@ -32,8 +32,13 @@ def test_copilotkit_run_js_turn_renders_result():
 
         textarea = page.get_by_test_id("copilot-chat-textarea")
         expect(textarea).to_be_visible(timeout=30_000)
-        textarea.fill(PROMPT)
-        page.get_by_test_id("copilot-send-button").click()
+        # Type real keystrokes (not .fill): CopilotKit's controlled input only
+        # enables the send button on the React onChange that real input events
+        # fire. Submit with Enter, which the chat treats as send.
+        textarea.click()
+        textarea.press_sequentially(PROMPT, delay=10)
+        expect(page.get_by_test_id("copilot-send-button")).to_be_enabled(timeout=15_000)
+        textarea.press("Enter")
 
         # A run_js tool call renders as a RunJsCard, and its result pane shows 4.
         # (js.run_js returns an execution_id; the js.get_execution_output polls
