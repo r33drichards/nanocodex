@@ -1,0 +1,11 @@
+{
+  "fetch": {
+    "mode": "all",
+    "policies": [
+      {
+        "url": "file:///app/policies/fetch.rego",
+        "rule": "data.mcp.fetch.allow"
+      }
+    ]
+  }
+}

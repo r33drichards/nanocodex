@@ -1,0 +1,24 @@
+# Global codex config for nanocodex: the model gets NO filesystem or
+# command-exec tools. Its only capability is whatever MCP servers each thread
+# declares in its `thread/start` config override (see client/demo.py) — for
+# nanocodex that is a per-thread mcp-v8 JavaScript sandbox.
+
+# Defense in depth on top of the disabled tools below.
+approval_policy = "never"
+sandbox_mode = "read-only"
+
+# Model auth via API key env var — no `codex login` required.
+model_provider = "openai-api-key"
+
+[model_providers.openai-api-key]
+name = "OpenAI (API key)"
+base_url = "https://api.openai.com/v1"
+env_key = "OPENAI_API_KEY"
+wire_api = "responses"
+
+[features]
+# Kills the shell / unified-exec tool family.
+shell_tool = false
+# Fork additions: strip the remaining fs-touching built-in tools.
+apply_patch_tool = false
+view_image_tool = false

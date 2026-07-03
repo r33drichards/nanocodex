@@ -1,0 +1,30 @@
+services:
+  codex:
+    build: .
+    image: nanocodex:latest
+    ports:
+      - "4500:4500"
+    environment:
+      # Model auth: consumed by the `openai-api-key` provider in codex-home/config.toml
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?set OPENAI_API_KEY for model auth}
+      RUST_LOG: ${RUST_LOG:-info}
+    secrets:
+      - ws_token
+    volumes:
+      # Persist thread history/state across restarts
+      - codex-data:/codex-home/sqlite
+      - codex-sessions:/codex-home/sessions
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:4500/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+
+secrets:
+  ws_token:
+    file: ./secrets/ws-token
+
+volumes:
+  codex-data:
+  codex-sessions:
