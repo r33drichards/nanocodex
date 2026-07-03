@@ -29,7 +29,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /src
 RUN git clone --depth 1 --branch "${CODEX_REF}" "${CODEX_REPO}" codex
 WORKDIR /src/codex/codex-rs
-RUN cargo build --release -p codex-app-server --bin codex-app-server
+# -j3: full parallelism OOMs an 8 GB Docker Desktop VM on this workspace's
+# largest crates.
+RUN cargo build --release -j 3 -p codex-app-server --bin codex-app-server
 
 # ── runtime ───────────────────────────────────────────────────────────────
 FROM debian:bookworm-slim
