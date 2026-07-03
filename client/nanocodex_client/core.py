@@ -303,6 +303,14 @@ class Nanocodex:
         self._ids = itertools.count(1)
         self._pending: dict[int, asyncio.Future] = {}
         self._subscribers: list[asyncio.Queue] = []
+        # Optional async hook for server → client requests (e.g. approval
+        # elicitations). Signature: async (msg: dict) -> dict | None. Return a
+        # reply dict ({"result": ...} or {"error": ...}) to answer immediately,
+        # or None to DEFER (the caller answers later via respond_to_server_request
+        # / fail_server_request — used for human-in-the-loop approvals). When
+        # unset, the built-in default applies (auto-approve tool-call
+        # elicitations, refuse everything else).
+        self.on_server_request = None
         self._reader = asyncio.create_task(self._read_loop())
 
     # ── lifecycle ────────────────────────────────────────────────────────
@@ -339,14 +347,18 @@ class Nanocodex:
                     if fut and not fut.done():
                         fut.set_result(msg)
                 elif "id" in msg and "method" in msg:
-                    # Server → client request. Approve MCP tool-call approval
-                    # elicitations (the sandbox is the model's only, trusted
-                    # tool) so tool calls aren't rejected; refuse anything else,
-                    # since exec/fs tools are disabled and nothing else should
-                    # be asking us. (Belt-and-suspenders: SandboxSpec also sets
-                    # default_tools_approval_mode=approve so this rarely fires.)
-                    reply = self._server_request_reply(msg)
-                    await self.ws.send(json.dumps({"id": msg["id"], **reply}))
+                    # Server → client request (e.g. an approval elicitation). A
+                    # registered hook may answer it, or defer (return None) to
+                    # answer later via respond_to_server_request. Otherwise the
+                    # default applies: approve tool-call elicitations (the
+                    # sandbox is the model's only, trusted tool), refuse the rest.
+                    reply = None
+                    if self.on_server_request is not None:
+                        reply = await self.on_server_request(msg)
+                    else:
+                        reply = self._server_request_reply(msg)
+                    if reply is not None:
+                        await self.ws.send(json.dumps({"id": msg["id"], **reply}))
                 else:
                     for q in list(self._subscribers):
                         q.put_nowait(msg)
@@ -387,6 +399,21 @@ class Nanocodex:
         if params is not None:
             payload["params"] = params
         await self.ws.send(json.dumps(payload))
+
+    def inject_notification(self, method: str, params: dict) -> None:
+        """Push a synthetic notification onto all subscribers, as if it arrived
+        from the server. Used to surface bridge-internal events (e.g. approval
+        prompts) onto a live notification stream."""
+        for q in list(self._subscribers):
+            q.put_nowait({"method": method, "params": params})
+
+    async def respond_to_server_request(self, request_id, result: Any) -> None:
+        """Answer a deferred server → client request (see on_server_request)."""
+        await self.ws.send(json.dumps({"id": request_id, "result": result}))
+
+    async def fail_server_request(self, request_id, error: dict) -> None:
+        """Reject a deferred server → client request."""
+        await self.ws.send(json.dumps({"id": request_id, "error": error}))
 
     def notifications(self, thread_id: str | None = None) -> "NotificationStream":
         """Subscribe to server notifications (optionally one thread's)."""

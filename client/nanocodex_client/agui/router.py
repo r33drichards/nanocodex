@@ -8,9 +8,12 @@ model provider; the router only supplies the per-thread mcp-v8 sandbox.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
+import uuid
 
-from ag_ui.core.events import RunAgentInput
+from ag_ui.core.events import CustomEvent, RunAgentInput
 from ag_ui.encoder import EventEncoder
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -23,6 +26,56 @@ router = APIRouter()
 store = ThreadStore()
 # codex thread ids with an in-flight turn (one active turn per thread).
 _active: set[str] = set()
+
+# Pending human-in-the-loop approvals: approval_id -> Future[bool].
+_approvals: dict[str, asyncio.Future] = {}
+# How long to wait for a frontend decision before defaulting to DENY.
+APPROVAL_TIMEOUT_SECS = float(os.environ.get("AGUI_APPROVAL_TIMEOUT", "120"))
+
+# Bridge-internal synthetic notification methods (see _approval_handler).
+_APPROVAL = "__approval__"
+_APPROVAL_RESOLVED = "__approval_resolved__"
+
+
+def _approval_handler(nc: Nanocodex, thread_id: str):
+    """on_server_request hook: surface a Codex mcp tool-call approval as an
+    AG-UI event and block the turn until the frontend decides via the
+    /agui/approvals side-channel (or a timeout defaults to deny)."""
+
+    async def handler(msg: dict):
+        method = msg.get("method", "")
+        params = msg.get("params") or {}
+        meta = params.get("_meta") or {}
+        is_tool_approval = method == "mcpServer/elicitation/request" and (
+            meta.get("codex_approval_kind") == "mcp_tool_call"
+        )
+        if not is_tool_approval:
+            return nc._server_request_reply(msg)  # non-approval: default behavior
+
+        approval_id = uuid.uuid4().hex
+        fut: asyncio.Future = asyncio.get_event_loop().create_future()
+        _approvals[approval_id] = fut
+        # Surface the approval onto the run's SSE stream (frontend renders it).
+        nc.inject_notification(_APPROVAL, {
+            "threadId": thread_id,
+            "approvalId": approval_id,
+            "toolDescription": meta.get("tool_description"),
+            "detail": params.get("message") or params,
+        })
+        approved = False
+        try:
+            approved = await asyncio.wait_for(fut, timeout=APPROVAL_TIMEOUT_SECS)
+        except asyncio.TimeoutError:
+            approved = False
+        finally:
+            _approvals.pop(approval_id, None)
+            nc.inject_notification(_APPROVAL_RESOLVED, {
+                "threadId": thread_id, "approvalId": approval_id, "approved": approved,
+            })
+        # MCP elicitation reply Codex understands (accept/decline).
+        return {"result": {"action": "accept" if approved else "decline"}}
+
+    return handler
 
 
 def _trailing_user_text(messages: list) -> str:
@@ -42,9 +95,13 @@ def _trailing_user_text(messages: list) -> str:
     return "\n".join(parts)
 
 
-def _sandbox_for(session_id: str) -> SandboxSpec:
+def _sandbox_for(session_id: str, approvals: bool = False) -> SandboxSpec:
     """Per-thread mcp-v8 sandbox: heap-dir + a stable, unique --session-id so
-    the sandbox is stateful within the thread and isolated across threads."""
+    the sandbox is stateful within the thread and isolated across threads.
+
+    `approvals` opts the thread into human-in-the-loop: tools_approval="prompt"
+    makes Codex elicit approval before each tool call (surfaced to the frontend
+    via the /agui approval side-channel); the default "approve" auto-runs."""
     return SandboxSpec(
         args=[
             "--policies-json", "/app/policies/policies.json",
@@ -53,7 +110,13 @@ def _sandbox_for(session_id: str) -> SandboxSpec:
             "--session-id", session_id,
         ],
         session_dir=f"/tmp/agui-sessions/{session_id}",
+        tools_approval="prompt" if approvals else "approve",
     )
+
+
+def _wants_approvals(inp: RunAgentInput) -> bool:
+    fp = inp.forwarded_props if isinstance(inp.forwarded_props, dict) else {}
+    return bool(fp.get("approvals", os.environ.get("AGUI_APPROVALS") == "1"))
 
 
 @router.post("/agui")
@@ -72,6 +135,8 @@ async def agui(request: Request):
     encoder = EventEncoder(accept=request.headers.get("accept"))
     state = RunState(thread_id=inp.thread_id, run_id=inp.run_id)
 
+    approvals = _wants_approvals(inp)
+
     async def stream():
         nc = None
         codex_tid = None
@@ -80,12 +145,16 @@ async def agui(request: Request):
             b = store.get(inp.thread_id)
             if b is None:
                 sid = ThreadStore.new_session_id()
-                resp = await nc.create_thread(sandbox=_sandbox_for(sid), cwd="/tmp")
+                resp = await nc.create_thread(sandbox=_sandbox_for(sid, approvals), cwd="/tmp")
                 codex_tid = resp["thread"]["id"]
                 store.bind(inp.thread_id, codex_tid, sid)
             else:
                 codex_tid = b.codex_thread_id
                 await nc.resume_thread(codex_tid)
+
+            # HITL: intercept Codex approval elicitations and route them to the
+            # frontend over this stream (instead of auto-approving).
+            nc.on_server_request = _approval_handler(nc, codex_tid)
 
             _active.add(codex_tid)
             for e in run_started(state):
@@ -95,6 +164,17 @@ async def agui(request: Request):
             turn = await nc.start_turn(codex_tid, prompt)
             turn_id = turn.get("id")
             async for method, params in notif:
+                if method == _APPROVAL:
+                    yield encoder.encode(CustomEvent(name="approval_request", value={
+                        "approvalId": params["approvalId"],
+                        "toolDescription": params.get("toolDescription"),
+                    }))
+                    continue
+                if method == _APPROVAL_RESOLVED:
+                    yield encoder.encode(CustomEvent(name="approval_resolved", value={
+                        "approvalId": params["approvalId"], "approved": params["approved"],
+                    }))
+                    continue
                 for e in map_notification(method, params, state):
                     yield encoder.encode(e)
                 if method == "turn/completed" and params.get("turn", {}).get("id") == turn_id:
@@ -135,3 +215,16 @@ async def steer(agui_thread_id: str, request: Request):
     finally:
         await nc.close()
     return {"steered": True}
+
+
+@router.post("/agui/approvals/{approval_id}")
+async def resolve_approval(approval_id: str, request: Request):
+    """Side-channel: answer a pending HITL approval surfaced on a run stream.
+    Body: {"approve": true|false}. Unblocks the paused Codex turn."""
+    fut = _approvals.get(approval_id)
+    if fut is None or fut.done():
+        raise HTTPException(status_code=404, detail="unknown or already-resolved approval")
+    body = await request.json()
+    approved = bool(body.get("approve", body.get("approved", False)))
+    fut.set_result(approved)
+    return {"approvalId": approval_id, "approved": approved}
