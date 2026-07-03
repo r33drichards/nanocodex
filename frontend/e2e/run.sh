@@ -50,3 +50,6 @@ FRONTEND_URL="http://localhost:3100" "$venv/bin/python" "$here/test_assistant_ui
 
 echo "== playwright e2e (image attach + paste$( [ "${AGUI_VISION_SMOKE:-}" = "1" ] && echo ' + vision' )) =="
 FRONTEND_URL="http://localhost:3100" "$venv/bin/python" "$here/test_assistant_ui_images.py"
+
+echo "== playwright e2e (render_plotly generative UI) =="
+FRONTEND_URL="http://localhost:3100" "$venv/bin/python" "$here/test_assistant_ui_plotly.py"

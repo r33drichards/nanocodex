@@ -9,7 +9,14 @@ import {
   useAssistantRuntime,
   useComposerRuntime,
 } from "@assistant-ui/react";
-import { useEffect, useRef, useState, type ClipboardEvent } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ClipboardEvent,
+  type ComponentType,
+} from "react";
 
 // ── run_js tool card ─────────────────────────────────────────────────────────
 // The bridge forwards the raw MCP result (`{content:[{text:"{...}"}]}`); unwrap
@@ -52,8 +59,9 @@ function codeFromArgs(args: any, argsText?: string): string {
   return argsText ?? "";
 }
 
-// Fallback tool renderer: codex namespaces tools (`js.run_js`,
-// `js.get_execution_output`), so a single Fallback catches them all.
+// Default tool renderer for anything without a TOOL_RENDERERS entry — codex
+// namespaces tools (`js.run_js`, `js.get_execution_output`), so this catches
+// the whole sandbox family.
 function RunJsCard({ toolName, args, argsText, result, status }: any) {
   const [open, setOpen] = useState(true);
   const code = codeFromArgs(args, argsText);
@@ -83,6 +91,86 @@ function RunJsCard({ toolName, args, argsText, result, status }: any) {
   );
 }
 
+// ── generative-UI tool renderers ─────────────────────────────────────────────
+// The bridge gives each thread a `ui` MCP server whose render_* tools are
+// no-op acks: the tool-call ARGUMENTS are the thing to render, piped naively
+// into the matching component below. To add a render tool, add its definition
+// to UI_TOOLS (client/nanocodex_client/agui/ui_tools.py) and register a
+// renderer here under the bare tool name (codex namespaces tools `ui.<name>`).
+
+// render_plotly: the arguments ARE a Plotly figure ({data, layout?, config?}).
+function PlotlyToolCard({ toolName, args, argsText }: any) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  // argsText only JSON.parses once the args have fully streamed, so the chart
+  // draws once per figure instead of on every delta; rehydrated history and
+  // already-parsed args are the fallback.
+  const figJson = useMemo(() => {
+    try {
+      const f = JSON.parse(argsText || "");
+      if (f && Array.isArray(f.data)) return argsText as string;
+    } catch {}
+    if (args && Array.isArray(args.data)) {
+      try {
+        return JSON.stringify(args);
+      } catch {}
+    }
+    return null;
+  }, [args, argsText]);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !figJson) return;
+    let cancelled = false;
+    let plotly: any = null;
+    void import("plotly.js-dist-min").then((mod: any) => {
+      if (cancelled) return;
+      plotly = mod.default ?? mod;
+      const fig = JSON.parse(figJson);
+      void plotly.react(el, fig.data, fig.layout ?? {}, {
+        responsive: true,
+        displaylogo: false,
+        ...(fig.config ?? {}),
+      });
+    });
+    return () => {
+      cancelled = true;
+      if (plotly) plotly.purge(el);
+    };
+  }, [figJson]);
+
+  // Responsive plotly fills its container, so the container needs a height;
+  // a figure's own layout.height wins over the default.
+  let height = 360;
+  if (figJson) {
+    try {
+      height = JSON.parse(figJson).layout?.height ?? height;
+    } catch {}
+  }
+
+  return (
+    <div className="plotly-card" data-testid="plotly-card" data-tool={toolName}>
+      {figJson ? (
+        <div ref={ref} className="plotly-chart" data-testid="plotly-chart" style={{ height }} />
+      ) : (
+        <div className="plotly-pending" data-testid="plotly-pending">
+          rendering chart…
+        </div>
+      )}
+    </div>
+  );
+}
+
+const TOOL_RENDERERS: Record<string, ComponentType<any>> = {
+  render_plotly: PlotlyToolCard,
+};
+
+function ToolCallPart(props: any) {
+  const bare = String(props.toolName ?? "").split(".").pop() ?? "";
+  const Renderer = TOOL_RENDERERS[bare];
+  return Renderer ? <Renderer {...props} /> : <RunJsCard {...props} />;
+}
+
 function TextPart({ text }: { text: string }) {
   return <span className="text-part">{text}</span>;
 }
@@ -96,7 +184,7 @@ function ImagePart({ image }: { image: string }) {
 const messageComponents = {
   Text: TextPart,
   Image: ImagePart,
-  tools: { Fallback: RunJsCard },
+  tools: { Fallback: ToolCallPart },
 };
 
 function UserMessage() {

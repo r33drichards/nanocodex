@@ -278,6 +278,25 @@ body {
   cursor: default;
 }
 
+/* ── generative-UI tool cards (render_plotly, …) ───────────────────────── */
+.plotly-card {
+  border: 1px solid #d6d3f0;
+  border-radius: 8px;
+  margin: 0.5rem 0;
+  padding: 0.35rem;
+  background: #fff;
+}
+
+.plotly-chart {
+  width: 100%;
+}
+
+.plotly-pending {
+  color: #888;
+  font-size: 13px;
+  padding: 0.4rem 0.5rem;
+}
+
 /* ── run_js tool-call card ─────────────────────────────────────────────── */
 .run-js-card {
   border: 1px solid #d6d3f0;

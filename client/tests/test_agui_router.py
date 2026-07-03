@@ -30,11 +30,13 @@ class FakeNC:
         FakeNC.resumed.append(thread_id)
         return {"thread": {"id": thread_id}}
 
-    async def create_thread(self, sandbox=None, cwd="/tmp", developer_instructions=None):
+    async def create_thread(self, sandbox=None, cwd="/tmp", developer_instructions=None,
+                            extra_mcp_servers=None):
         FakeNC._n = getattr(FakeNC, "_n", 0) + 1
         tid = f"codex-new-{FakeNC._n}"
         FakeNC.existing.add(tid)
         FakeNC.created.append(tid)
+        FakeNC.extra_mcp_servers = extra_mcp_servers
         return {"thread": {"id": tid}}
 
     async def list_threads(self, limit=100):
@@ -105,6 +107,8 @@ class RouterTest(unittest.TestCase):
         tid = asyncio.run(R._resolve_or_create(nc, "local-xyz", approvals=False))
         self.assertEqual(FakeNC.created, [tid])        # a new codex thread
         self.assertEqual(R._codex_id_for("local-xyz"), tid)  # local id -> codex id
+        # new threads get the generative-UI `ui` MCP server next to `js`
+        self.assertIn("ui", FakeNC.extra_mcp_servers)
 
 
 def _app():

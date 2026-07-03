@@ -423,8 +423,14 @@ class Nanocodex:
 
     # ── thread ops ───────────────────────────────────────────────────────
     async def create_thread(self, sandbox: SandboxSpec | None = None, model: str | None = None,
-                            cwd: str = "/tmp", developer_instructions: str | None = None) -> dict:
-        params: dict = {"cwd": cwd, "config": (sandbox or SandboxSpec()).to_config()}
+                            cwd: str = "/tmp", developer_instructions: str | None = None,
+                            extra_mcp_servers: dict | None = None) -> dict:
+        """`extra_mcp_servers` merges additional per-thread MCP servers (e.g.
+        the agui bridge's `ui` generative-UI server) next to the sandbox's `js`."""
+        config = (sandbox or SandboxSpec()).to_config()
+        if extra_mcp_servers:
+            config["mcp_servers"].update(extra_mcp_servers)
+        params: dict = {"cwd": cwd, "config": config}
         if model:
             params["model"] = model
         if developer_instructions:
