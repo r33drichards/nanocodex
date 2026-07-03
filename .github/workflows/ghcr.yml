@@ -9,6 +9,10 @@ permissions:
   contents: read
   packages: write
 
+concurrency:
+  group: ghcr-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   IMAGE: ghcr.io/${{ github.repository }}
 
@@ -34,6 +38,20 @@ jobs:
           df -h /
 
       - uses: DeterminateSystems/nix-installer-action@v16
+
+      # Cache /nix/store in the GitHub Actions cache, keyed on flake.lock.
+      # On a lock hit the rust builds are skipped entirely and the job is
+      # just image assembly + push. The two arches share the repo's 10 GB
+      # cache budget, so keep each store pruned under ~4.5 GB.
+      - uses: nix-community/cache-nix-action@v6
+        with:
+          primary-key: nix-${{ matrix.arch }}-${{ hashFiles('flake.lock', 'flake.nix') }}
+          restore-prefixes-first-match: nix-${{ matrix.arch }}-
+          gc-max-store-size-linux: 4500M
+          purge: true
+          purge-prefixes: nix-${{ matrix.arch }}-
+          purge-created: 0
+          purge-primary-key: never
 
       - name: nix build image
         run: |
