@@ -31,12 +31,17 @@ _token_opt = typer.Option(None, "--token", envvar="NANOCODEX_WS_TOKEN")
 def _sandbox(
     bearer: Optional[list[str]],
     oauth: Optional[list[str]],
+    config: Optional[str] = None,
+    config_format: str = "toml",
     policy: Optional[str] = None,
     rego: Optional[list[str]] = None,
     arg: Optional[list[str]] = None,
 ) -> SandboxSpec:
     """Build a sandbox from CLI options.
 
+    --config PATH    local mcp-v8 config (.json or .toml), used as the whole
+                     config via --config (mcp-v8 >= 0.18.1). Owns mcp-v8 config;
+                     --policy/--rego --args ignored except bearer folds in.
     --policy PATH    local policies.json, passed inline (--policies-json <json>)
     --rego  PATH     local .rego file(s), written into the container at
                      /tmp/nanocodex/<basename> before mcp-v8 starts; reference
@@ -54,6 +59,16 @@ def _sandbox(
         if not tok:
             raise typer.BadParameter("--bearer expects HOST=TOKEN")
         pairs.append((host, tok))
+
+    if config:
+        text = _Path(config).read_text()
+        if config.endswith(".toml"):
+            import tomllib
+            doc = tomllib.loads(text)
+        else:
+            doc = _json.loads(text)
+        return SandboxSpec(config=doc, config_format=config_format, bearer=pairs,
+                           extra_args=list(arg or []))
 
     files: dict[str, str] = {}
     for local in rego or []:
@@ -80,6 +95,8 @@ def _run(coro):
 
 _bearer_opt = typer.Option(None, help="HOST=TOKEN static fetch bearer (repeatable)")
 _oauth_opt = typer.Option(None, help="mcp-v8 oauth client-credentials fetch-header rule")
+_config_opt = typer.Option(None, "--config", help="local mcp-v8 config file (.json/.toml), passed via --config")
+_config_fmt_opt = typer.Option("toml", "--config-format", help="on-disk format for --config (toml|json)")
 _policy_opt = typer.Option(None, help="local policies.json, passed inline to mcp-v8")
 _rego_opt = typer.Option(None, help="local .rego file written into the container before mcp-v8 starts (repeatable)")
 _arg_opt = typer.Option(None, "--arg", help="extra raw mcp-v8 arg (repeatable)")
@@ -89,6 +106,8 @@ _arg_opt = typer.Option(None, "--arg", help="extra raw mcp-v8 arg (repeatable)")
 def create(
     bearer: Optional[list[str]] = _bearer_opt,
     oauth: Optional[list[str]] = _oauth_opt,
+    config: Optional[str] = _config_opt,
+    config_format: str = _config_fmt_opt,
     policy: Optional[str] = _policy_opt,
     rego: Optional[list[str]] = _rego_opt,
     arg: Optional[list[str]] = _arg_opt,
@@ -99,7 +118,7 @@ def create(
     """Start a new thread with its own mcp-v8 sandbox."""
     async def go():
         async with await Nanocodex.connect(url, token) as nc:
-            resp = await nc.create_thread(sandbox=_sandbox(bearer, oauth, policy, rego, arg), model=model)
+            resp = await nc.create_thread(sandbox=_sandbox(bearer, oauth, config, config_format, policy, rego, arg), model=model)
             typer.echo(resp["thread"]["id"])
             typer.echo(f"model: {resp.get('model')} ({resp.get('modelProvider')})", err=True)
     _run(go())
@@ -111,6 +130,8 @@ def send(
     prompt: str,
     bearer: Optional[list[str]] = _bearer_opt,
     oauth: Optional[list[str]] = _oauth_opt,
+    config: Optional[str] = _config_opt,
+    config_format: str = _config_fmt_opt,
     policy: Optional[str] = _policy_opt,
     rego: Optional[list[str]] = _rego_opt,
     arg: Optional[list[str]] = _arg_opt,
@@ -122,7 +143,7 @@ def send(
     """Run a turn on a thread and stream it to completion."""
     async def go():
         async with await Nanocodex.connect(url, token) as nc:
-            await nc.resume_thread(thread_id, sandbox=_sandbox(bearer, oauth, policy, rego, arg))
+            await nc.resume_thread(thread_id, sandbox=_sandbox(bearer, oauth, config, config_format, policy, rego, arg))
 
             def on_event(method, params):
                 if method == "item/completed":

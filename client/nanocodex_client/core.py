@@ -53,6 +53,17 @@ class SandboxSpec:
     """Per-thread mcp-v8 sandbox configuration — a naive passthrough with
     conveniences layered on top.
 
+    Preferred (mcp-v8 >= 0.18.1): a single `config` object covering everything.
+      config:    one config document as a dict. Written to the container fs and
+                 passed as `--config <path>`. Scalar keys mirror flag names
+                 (`http_port`, dashes/underscores interchangeable); structured
+                 sections are `policies` (object), `fetch_headers` (array),
+                 `mcp_servers` (array), `wasm` (object). When set, `config`
+                 owns the mcp-v8 configuration — bearer/oauth/policies/args are
+                 not applied (put fetch auth in config['fetch_headers']).
+      config_format: "toml" (default) or "json"; picks the written file's
+                 extension, which is how mcp-v8 detects the format.
+
     Escape hatches (most raw first):
       raw:       entire `mcp_servers.js` value, used verbatim (ignores all else)
       args:      full mcp-v8 argv; None => sensible default (--policies-json)
@@ -62,7 +73,7 @@ class SandboxSpec:
                  custom rego: codex writes the file, then execs mcp-v8 pointed
                  at it. Contents travel through env, so they are not in argv.
 
-    Conveniences (appended to args unless `args`/`raw` given):
+    Conveniences (appended to args unless `config`/`args`/`raw` given):
       policies:  policies.json content as a dict, passed INLINE via
                  --policies-json (mcp-v8 accepts inline JSON or a path). Use
                  this + `files` for custom rego referenced by file:// URLs.
@@ -71,6 +82,8 @@ class SandboxSpec:
       extra_args: extra mcp-v8 args (e.g. heap persistence)
     """
 
+    config: Optional[dict] = None
+    config_format: str = "toml"
     raw: Optional[dict] = None
     args: Optional[list[str]] = None
     env: dict[str, str] = field(default_factory=dict)
@@ -87,7 +100,31 @@ class SandboxSpec:
         `policies_path` must be one of the written files' paths."""
         return cls(files=dict(files), args=["--policies-json", policies_path], **kw)
 
+    def _config_file(self) -> Optional[tuple[str, str]]:
+        """If `config` is set, return (container_path, file_content) for the
+        mcp-v8 config file; else None. The extension matches `config_format`
+        because mcp-v8 detects TOML vs JSON by extension."""
+        if self.config is None:
+            return None
+        cfg = dict(self.config)
+        # Fold the bearer convenience into the config's fetch_headers so a
+        # caller can still hand tokens separately from a base config.
+        if self.bearer:
+            headers = list(cfg.get("fetch_headers") or [])
+            for host, token in self.bearer:
+                headers.append({"host": host, "headers": {"Authorization": f"Bearer {token}"}})
+            cfg["fetch_headers"] = headers
+        fmt = self.config_format.lower()
+        if fmt == "json":
+            return f"{DEFAULT_POLICY_DIR}/config.json", json.dumps(cfg, indent=2)
+        if fmt == "toml":
+            return f"{DEFAULT_POLICY_DIR}/config.toml", _to_toml(cfg)
+        raise ValueError(f"config_format must be 'toml' or 'json', got {self.config_format!r}")
+
     def _mcp_args(self) -> list[str]:
+        if self.config is not None:
+            path, _ = self._config_file()
+            return ["--config", path, *self.extra_args]
         if self.args is not None:
             args = list(self.args)
         elif self.policies is not None:
@@ -110,11 +147,18 @@ class SandboxSpec:
         mcp_args = self._mcp_args()
         env = dict(self.env)
 
-        if self.files:
+        # A `config` document is materialized as one of the written files.
+        files = dict(self.files)
+        config_file = self._config_file()
+        if config_file is not None:
+            path, content = config_file
+            files[path] = content
+
+        if files:
             # Wrap: write each file (content via env, so it stays out of argv),
             # then exec mcp-v8 with the resolved args as "$@".
             writes = []
-            for i, (path, content) in enumerate(self.files.items()):
+            for i, (path, content) in enumerate(files.items()):
                 var = f"NANOCODEX_FILE_{i}"
                 env[var] = content
                 q = _sh_quote(path)
@@ -141,6 +185,78 @@ def _sh_quote(s: str) -> str:
     import shlex
 
     return shlex.quote(s)
+
+
+def _drop_none(value):
+    if isinstance(value, dict):
+        return {k: _drop_none(v) for k, v in value.items() if v is not None}
+    if isinstance(value, list):
+        return [_drop_none(v) for v in value]
+    return value
+
+
+def _to_toml(doc: dict) -> str:
+    """Serialize a config dict to TOML. Prefers tomli_w (handder of nested
+    tables / arrays-of-tables); falls back to a minimal emitter covering the
+    mcp-v8 config shape (scalars + nested tables + arrays of tables)."""
+    doc = _drop_none(doc)
+    try:
+        import tomli_w
+
+        return tomli_w.dumps(doc)
+    except ImportError:
+        return _toml_fallback(doc)
+
+
+def _toml_fallback(doc: dict) -> str:
+    import datetime
+
+    def fmt_scalar(v):
+        if isinstance(v, bool):
+            return "true" if v else "false"
+        if isinstance(v, (int, float)):
+            return repr(v)
+        if isinstance(v, str):
+            return json.dumps(v)  # TOML basic strings share JSON's escaping
+        if isinstance(v, datetime.datetime):
+            return v.isoformat()
+        raise TypeError(f"cannot serialize {type(v).__name__} to TOML")
+
+    def is_table(v):
+        return isinstance(v, dict)
+
+    def is_table_array(v):
+        return isinstance(v, list) and v and all(isinstance(x, dict) for x in v)
+
+    def fmt_inline(v):
+        if is_table(v):
+            return "{" + ", ".join(f"{k} = {fmt_inline(x)}" for k, x in v.items()) + "}"
+        if isinstance(v, list):
+            return "[" + ", ".join(fmt_inline(x) for x in v) + "]"
+        return fmt_scalar(v)
+
+    lines: list[str] = []
+
+    def emit(table: dict, prefix: str):
+        # scalars / inline arrays first
+        for k, v in table.items():
+            if is_table(v) or is_table_array(v):
+                continue
+            lines.append(f"{k} = {fmt_inline(v)}")
+        for k, v in table.items():
+            path = f"{prefix}.{k}" if prefix else k
+            if is_table(v):
+                lines.append("")
+                lines.append(f"[{path}]")
+                emit(v, path)
+            elif is_table_array(v):
+                for item in v:
+                    lines.append("")
+                    lines.append(f"[[{path}]]")
+                    emit(item, path)
+
+    emit(doc, "")
+    return "\n".join(lines).lstrip("\n") + "\n"
 
 
 class RpcError(RuntimeError):

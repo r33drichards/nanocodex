@@ -42,16 +42,16 @@
         "rust-overlay": "rust-overlay"
       },
       "locked": {
-        "lastModified": 1783037654,
-        "narHash": "sha256-hLbpWA8A2Et8kZqEa3fhXhqNashMgU3JzONLTOpoX9k=",
+        "lastModified": 1783047035,
+        "narHash": "sha256-UeINsH8WpQmiFvzP4RvhKsu2pvZWAKx6T16hSRSGCXY=",
         "owner": "r33drichards",
         "repo": "mcp-js",
-        "rev": "aa5e10629bd93922298c1b04b7b38e189ea29e85",
+        "rev": "9b88f4a8d8dbf4b9aeeba5289e4063639cdf4b1d",
         "type": "github"
       },
       "original": {
         "owner": "r33drichards",
-        "ref": "claude/kodex-mcp-js-library-37218h",
+        "ref": "v0.18.1",
         "repo": "mcp-js",
         "type": "github"
       }

@@ -9,6 +9,7 @@ dependencies = [
     "fastapi>=0.110",
     "uvicorn>=0.29",
     "fastmcp>=2.0",
+    "tomli-w>=1.0",
 ]
 
 [project.scripts]

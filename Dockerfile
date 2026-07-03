@@ -9,7 +9,8 @@ ARG RUST_IMAGE=rust:1.95-bookworm
 # ── mcp-v8 builder ────────────────────────────────────────────────────────
 FROM ${RUST_IMAGE} AS mcpjs-builder
 ARG MCPJS_REPO=https://github.com/r33drichards/mcp-js.git
-ARG MCPJS_REF=claude/kodex-mcp-js-library-37218h
+# v0.18.1 release: has --config (PR #192) and OAuth fetch headers (PR #184).
+ARG MCPJS_REF=v0.18.1
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl python3 ca-certificates git \
     && rm -rf /var/lib/apt/lists/*

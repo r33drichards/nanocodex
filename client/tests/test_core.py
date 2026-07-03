@@ -165,6 +165,29 @@ class SandboxSpecTest(unittest.TestCase):
         self.assertIn("mcp-v8", cfg["args"])
         self.assertEqual(cfg["args"][-2:], ["--policies-json", "/tmp/t/p.json"])
 
+    def test_config_written_as_toml_and_passed_via_flag(self):
+        import tomllib
+
+        cfg = {"policies": {"fetch": {"mode": "all",
+                                      "policies": [{"url": "file:///tmp/nanocodex/f.rego"}]}},
+               "fetch_headers": [{"host": "a.com", "headers": {"Authorization": "Bearer x"}}]}
+        spec = SandboxSpec(config=cfg, bearer=[("b.com", "tok")])
+        js = spec.to_config()["mcp_servers"]["js"]
+        self.assertEqual(js["command"], "/bin/sh")
+        self.assertEqual(js["args"][-2:], ["--config", "/tmp/nanocodex/config.toml"])
+        # the written config is valid TOML with the bearer folded into fetch_headers
+        written = js["env"]["NANOCODEX_FILE_0"]
+        parsed = tomllib.loads(written)
+        self.assertEqual(parsed["policies"]["fetch"]["mode"], "all")
+        hosts = {h["host"] for h in parsed["fetch_headers"]}
+        self.assertEqual(hosts, {"a.com", "b.com"})
+
+    def test_config_json_format(self):
+        spec = SandboxSpec(config={"http_port": 8080}, config_format="json")
+        js = spec.to_config()["mcp_servers"]["js"]
+        self.assertEqual(js["args"][-2:], ["--config", "/tmp/nanocodex/config.json"])
+        self.assertEqual(json.loads(js["env"]["NANOCODEX_FILE_0"]), {"http_port": 8080})
+
     def test_raw_is_verbatim(self):
         raw = {"command": "/x", "args": ["--foo"], "startup_timeout_sec": 5}
         cfg = SandboxSpec(raw=raw, bearer=[("h", "t")]).to_config()

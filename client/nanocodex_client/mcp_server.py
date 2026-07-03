@@ -33,6 +33,8 @@ def _sandbox(sandbox: Optional[dict]) -> SandboxSpec:
     Sandbox model / core.SandboxSpec fields)."""
     s = sandbox or {}
     return SandboxSpec(
+        config=s.get("config"),
+        config_format=s.get("config_format") or "toml",
         raw=s.get("raw"),
         args=s.get("args"),
         env=dict(s.get("env") or {}),
@@ -45,7 +47,10 @@ def _sandbox(sandbox: Optional[dict]) -> SandboxSpec:
 
 
 _SANDBOX_DOC = (
-    "Optional per-thread mcp-v8 sandbox (naive passthrough). Keys: "
+    "Optional per-thread mcp-v8 sandbox (naive passthrough). Preferred: "
+    "`config` (one mcp-v8 config document as a dict, written to disk and passed "
+    "as --config; sections: policies/fetch_headers/mcp_servers/wasm) with "
+    "`config_format` toml|json. Lower-level keys: "
     "`raw` (whole mcp server dict, verbatim), `args` (mcp-v8 argv), `env`, "
     "`files` ({container_path: content} written before mcp-v8 starts — use for "
     "custom rego), `policies` (policies.json as a dict, passed inline), "

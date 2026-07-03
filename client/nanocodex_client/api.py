@@ -38,6 +38,8 @@ app = FastAPI(title="nanocodex bridge", version="0.1.0")
 def _sandbox(s: "Sandbox | None") -> SandboxSpec:
     s = s or Sandbox()
     return SandboxSpec(
+        config=s.config,
+        config_format=s.config_format or "toml",
         raw=s.raw,
         args=s.args,
         env=dict(s.env or {}),
@@ -59,15 +61,19 @@ async def _connect() -> Nanocodex:
 class Sandbox(BaseModel):
     """Per-thread mcp-v8 sandbox config (mirrors core.SandboxSpec).
 
-    Ship custom rego by writing files then pointing --policies-json at one:
-        {"files": {"/tmp/t/fetch.rego": "package mcp.fetch\\ndefault allow=false\\n...",
-                   "/tmp/t/policies.json": "{\\"fetch\\": {\\"mode\\":\\"all\\",
-                     \\"policies\\":[{\\"url\\":\\"file:///tmp/t/fetch.rego\\"}]}}"},
-         "args": ["--policies-json", "/tmp/t/policies.json"]}
-    Or inline the policy document (no rego file) via `policies`.
-    Or hand over the whole mcp server config via `raw`.
+    Preferred: hand over one mcp-v8 config document as `config` (mcp-v8 >=
+    0.18.1 `--config`); it is written to the container fs and passed as
+    --config. `config_format` ("toml"|"json") picks the on-disk format.
+        {"config": {"policies": {"fetch": {"mode": "all", "policies": [...]}},
+                    "fetch_headers": [{"host": "api.example.com",
+                                       "headers": {"Authorization": "Bearer x"}}]}}
+    Ship custom rego alongside it via `files` (written before mcp-v8 starts)
+    and reference it as file:///... from the policies section.
+    Lower-level: `raw` (whole mcp server dict), `args`, `policies` (inline).
     """
 
+    config: Optional[dict] = None
+    config_format: Optional[str] = None
     raw: Optional[dict] = None
     args: Optional[list[str]] = None
     env: Optional[dict[str, str]] = None
