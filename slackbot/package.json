@@ -1,0 +1,23 @@
+{
+  "name": "nanocodex-slackbot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Slack bot for nanocodex: @copilotkit/bot wired to the AG-UI bridge, with codex as the state store",
+  "scripts": {
+    "start": "tsx index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test threads.test.ts"
+  },
+  "dependencies": {
+    "@ag-ui/client": "0.0.57",
+    "@copilotkit/bot": "0.0.3",
+    "@copilotkit/bot-slack": "0.0.3",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "5.7.2"
+  }
+}
