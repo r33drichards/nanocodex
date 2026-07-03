@@ -8,7 +8,7 @@ name: integration test (deterministic, model-free)
 
 on:
   push:
-    branches: [claude/integration-test]
+    branches: [main, claude/integration-test]
   pull_request:
   workflow_dispatch:
 
