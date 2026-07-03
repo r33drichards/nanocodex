@@ -1,13 +1,18 @@
 name: build and push to ghcr
 
+# main pushes publish `latest` + `<sha>`; pull requests publish the same
+# images under `pr-<number>` + `<sha>` tags and get a sticky PR comment with
+# the pullable references. Fork PRs are skipped (no ghcr write access).
 on:
   push:
     branches: [main]
+  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
   packages: write
+  pull-requests: write
 
 concurrency:
   group: ghcr-${{ github.ref }}
@@ -18,6 +23,8 @@ env:
 
 jobs:
   build:
+    # PR builds need to push to ghcr, which fork PRs' tokens can't do.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     strategy:
       fail-fast: false
       matrix:
@@ -80,8 +87,14 @@ jobs:
     steps:
       - name: assemble and push multi-arch manifest
         run: |
+          # main: latest + sha; PR: pr-<n> (mutable, tracks the PR) + sha.
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            tags="pr-${{ github.event.number }} ${{ github.sha }}"
+          else
+            tags="latest ${{ github.sha }}"
+          fi
           echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
-          for tag in latest "${{ github.sha }}"; do
+          for tag in $tags; do
             podman manifest create "${IMAGE}:${tag}"
             podman manifest add "${IMAGE}:${tag}" "docker://${IMAGE}:${{ github.sha }}-amd64"
             podman manifest add "${IMAGE}:${tag}" "docker://${IMAGE}:${{ github.sha }}-arm64"
@@ -121,10 +134,57 @@ jobs:
     steps:
       - name: assemble and push multi-arch manifest
         run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            tags="pr-${{ github.event.number }} ${{ github.sha }}"
+          else
+            tags="latest ${{ github.sha }}"
+          fi
           echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
-          for tag in latest "${{ github.sha }}"; do
+          for tag in $tags; do
             podman manifest create "${IMAGE}-languages:${tag}"
             podman manifest add "${IMAGE}-languages:${tag}" "docker://${IMAGE}-languages:${{ github.sha }}-amd64"
             podman manifest add "${IMAGE}-languages:${tag}" "docker://${IMAGE}-languages:${{ github.sha }}-arm64"
             podman manifest push --all "${IMAGE}-languages:${tag}" "docker://${IMAGE}-languages:${tag}"
           done
+
+  # Sticky PR comment with the pullable image references (updated in place on
+  # every push to the PR).
+  pr-comment:
+    if: github.event_name == 'pull_request'
+    needs: [manifest, manifest-languages]
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const marker = "<!-- ghcr-pr-image-builds -->";
+            const pr = context.issue.number;
+            const sha = context.sha; // the PR's merge commit — what the jobs built
+            const base = `ghcr.io/${context.repo.owner}/${context.repo.repo}`;
+            const body = [
+              marker,
+              "### 📦 PR image builds",
+              "",
+              "| image | tags |",
+              "|---|---|",
+              `| \`${base}\` | \`pr-${pr}\`, \`${sha}\` |`,
+              `| \`${base}-languages\` | \`pr-${pr}\`, \`${sha}\` |`,
+              "",
+              "```bash",
+              `docker pull ${base}:pr-${pr}`,
+              `docker pull ${base}-languages:pr-${pr}`,
+              "```",
+              "",
+              `Multi-arch (amd64/arm64). \`pr-${pr}\` tracks the latest push to this PR; the sha tag is immutable (built from the merge commit).`,
+            ].join("\n");
+            const { data: comments } = await github.rest.issues.listComments({
+              ...context.repo, issue_number: pr, per_page: 100,
+            });
+            const existing = comments.find((c) => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ ...context.repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ ...context.repo, issue_number: pr, body });
+            }
