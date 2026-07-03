@@ -160,6 +160,44 @@ for that thread only. The core sends:
 URL; header rules decide which hosts get credentials). Tighten it if you want
 an allowlist — see `policies/README.md`.
 
+### Naive passthrough & custom per-thread policies
+
+The `sandbox` field is a layered passthrough to that `mcp_servers.js` config,
+so a caller controls it without the client hardcoding anything:
+
+| field | effect |
+|---|---|
+| `raw` | entire `mcp_servers.js` dict, used verbatim |
+| `args` | full mcp-v8 argv (default: `--policies-json /app/policies/policies.json`) |
+| `env` | extra env for the mcp-v8 process |
+| `files` | `{container_path: content}` **written to the container fs before mcp-v8 starts** |
+| `policies` | a `policies.json` object, passed **inline** (`--policies-json` accepts JSON or a path) |
+| `bearer` / `oauth` | fetch-header conveniences |
+
+**Custom policies.** `--policies-json` takes the JSON document inline, so the
+policy *document* never needs a file. But local **rego** is read from disk by
+regorus, so to ship custom rego you write it first. `files` does exactly that:
+codex spawns mcp-v8 through an `sh -c` wrapper that writes each file (contents
+passed via `env`, kept out of argv) and then `exec`s mcp-v8. For example, over
+the HTTP bridge:
+
+```bash
+curl -sX POST localhost:8788/threads -H 'content-type: application/json' -d '{
+  "sandbox": {
+    "files": {
+      "/tmp/t/fetch.rego": "package mcp.fetch\ndefault allow = false\nallow if { input.url_parsed.host == \"api.example.com\" }\n",
+      "/tmp/t/policies.json": "{\"fetch\":{\"mode\":\"all\",\"policies\":[{\"url\":\"file:///tmp/t/fetch.rego\",\"rule\":\"data.mcp.fetch.allow\"}]}}"
+    },
+    "args": ["--policies-json", "/tmp/t/policies.json"],
+    "bearer": {"api.example.com": "secret-token"}
+  }
+}'
+```
+
+The same shape works from the CLI (`nanocodex create --policy p.json --rego
+fetch.rego`), the MCP tools (`create_thread`/`send` `sandbox` arg), or
+`SandboxSpec.with_policy_files(...)` in Python.
+
 ### Websocket auth
 
 Codex refuses unauthenticated non-loopback websocket listeners, so the

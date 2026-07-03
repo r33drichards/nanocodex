@@ -2,14 +2,18 @@
 
 REST over the shared core:
 
-    POST /threads                     {model?, bearer?: {host: token}, oauth?: [rule]}
+    POST /threads                     {model?, sandbox?: Sandbox}
     GET  /threads
     GET  /threads/{id}/messages
-    POST /threads/{id}/turns          {prompt, timeout?}   (blocks until turn completes)
+    POST /threads/{id}/turns          {prompt, timeout?, sandbox?}  (blocks until done)
     POST /threads/{id}/steer          {prompt}
     GET  /threads/{id}/events         SSE live-tail of the thread's notifications
     POST /rpc                         {method, params?}    naive passthrough
     WS   /proxy                       naive bidirectional frame proxy to codex
+
+`sandbox` is a naive passthrough to the per-thread mcp-v8 config: raw mcp
+server dict, raw args/env, files written before mcp-v8 starts (custom rego),
+inline policies, or the bearer/oauth conveniences. See the Sandbox model.
 
 Run: `nanocodex api` (or `uvicorn nanocodex_client.api:app`).
 Env: NANOCODEX_URL, NANOCODEX_WS_TOKEN.
@@ -31,8 +35,18 @@ from .core import Nanocodex, RpcError, SandboxSpec, default_ws_token, server_url
 app = FastAPI(title="nanocodex bridge", version="0.1.0")
 
 
-def _sandbox(bearer: Optional[dict[str, str]], oauth: Optional[list[str]]) -> SandboxSpec:
-    return SandboxSpec(bearer=list((bearer or {}).items()), oauth_rules=list(oauth or []))
+def _sandbox(s: "Sandbox | None") -> SandboxSpec:
+    s = s or Sandbox()
+    return SandboxSpec(
+        raw=s.raw,
+        args=s.args,
+        env=dict(s.env or {}),
+        files=dict(s.files or {}),
+        policies=s.policies,
+        bearer=list((s.bearer or {}).items()),
+        oauth_rules=list(s.oauth or []),
+        extra_args=list(s.extra_args or []),
+    )
 
 
 async def _connect() -> Nanocodex:
@@ -42,18 +56,38 @@ async def _connect() -> Nanocodex:
         raise HTTPException(502, f"cannot reach app server at {server_url()}: {e}")
 
 
-class CreateThread(BaseModel):
-    model: Optional[str] = None
+class Sandbox(BaseModel):
+    """Per-thread mcp-v8 sandbox config (mirrors core.SandboxSpec).
+
+    Ship custom rego by writing files then pointing --policies-json at one:
+        {"files": {"/tmp/t/fetch.rego": "package mcp.fetch\\ndefault allow=false\\n...",
+                   "/tmp/t/policies.json": "{\\"fetch\\": {\\"mode\\":\\"all\\",
+                     \\"policies\\":[{\\"url\\":\\"file:///tmp/t/fetch.rego\\"}]}}"},
+         "args": ["--policies-json", "/tmp/t/policies.json"]}
+    Or inline the policy document (no rego file) via `policies`.
+    Or hand over the whole mcp server config via `raw`.
+    """
+
+    raw: Optional[dict] = None
+    args: Optional[list[str]] = None
+    env: Optional[dict[str, str]] = None
+    files: Optional[dict[str, str]] = None
+    policies: Optional[dict] = None
     bearer: Optional[dict[str, str]] = None  # host -> token
     oauth: Optional[list[str]] = None
+    extra_args: Optional[list[str]] = None
+
+
+class CreateThread(BaseModel):
+    model: Optional[str] = None
+    sandbox: Optional[Sandbox] = None
     cwd: str = "/tmp"
 
 
 class Prompt(BaseModel):
     prompt: str
     timeout: float = 600.0
-    bearer: Optional[dict[str, str]] = None
-    oauth: Optional[list[str]] = None
+    sandbox: Optional[Sandbox] = None
 
 
 class Rpc(BaseModel):
@@ -71,7 +105,7 @@ async def rpc_error_handler(_, exc: RpcError):
 @app.post("/threads")
 async def create_thread(body: CreateThread):
     async with await _connect() as nc:
-        resp = await nc.create_thread(sandbox=_sandbox(body.bearer, body.oauth),
+        resp = await nc.create_thread(sandbox=_sandbox(body.sandbox),
                                       model=body.model, cwd=body.cwd)
         return {"threadId": resp["thread"]["id"], "model": resp.get("model"),
                 "modelProvider": resp.get("modelProvider")}
@@ -95,7 +129,7 @@ async def thread_messages(thread_id: str, verbose: bool = False, raw: bool = Fal
 @app.post("/threads/{thread_id}/turns")
 async def run_turn(thread_id: str, body: Prompt):
     async with await _connect() as nc:
-        await nc.resume_thread(thread_id, sandbox=_sandbox(body.bearer, body.oauth))
+        await nc.resume_thread(thread_id, sandbox=_sandbox(body.sandbox))
         result = await nc.run_turn(thread_id, body.prompt, timeout=body.timeout)
         return result
 

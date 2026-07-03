@@ -28,24 +28,48 @@ mcp = FastMCP(
 )
 
 
-def _sandbox(bearer: Optional[dict[str, str]], oauth: Optional[list[str]]) -> SandboxSpec:
-    return SandboxSpec(bearer=list((bearer or {}).items()), oauth_rules=list(oauth or []))
+def _sandbox(sandbox: Optional[dict]) -> SandboxSpec:
+    """Build a SandboxSpec from a passthrough dict (same shape as the API's
+    Sandbox model / core.SandboxSpec fields)."""
+    s = sandbox or {}
+    return SandboxSpec(
+        raw=s.get("raw"),
+        args=s.get("args"),
+        env=dict(s.get("env") or {}),
+        files=dict(s.get("files") or {}),
+        policies=s.get("policies"),
+        bearer=list((s.get("bearer") or {}).items()),
+        oauth_rules=list(s.get("oauth") or []),
+        extra_args=list(s.get("extra_args") or []),
+    )
+
+
+_SANDBOX_DOC = (
+    "Optional per-thread mcp-v8 sandbox (naive passthrough). Keys: "
+    "`raw` (whole mcp server dict, verbatim), `args` (mcp-v8 argv), `env`, "
+    "`files` ({container_path: content} written before mcp-v8 starts — use for "
+    "custom rego), `policies` (policies.json as a dict, passed inline), "
+    "`bearer` ({host: token}), `oauth` ([rule]), `extra_args`. "
+    "Custom-policy example: {\"files\": {\"/tmp/t/p.rego\": \"package mcp.fetch\\n"
+    "default allow=false\\n...\", \"/tmp/t/p.json\": \"{...file:///tmp/t/p.rego...}\"}, "
+    "\"args\": [\"--policies-json\", \"/tmp/t/p.json\"]}."
+)
 
 
 @mcp.tool
 async def create_thread(
     model: Optional[str] = None,
-    bearer: Optional[dict[str, str]] = None,
-    oauth: Optional[list[str]] = None,
+    sandbox: Optional[dict] = None,
 ) -> dict:
     """Start a new codex thread with its own mcp-v8 sandbox.
 
-    bearer: {host: token} static Authorization bearer(s), injected only on
-    the sandbox's fetch() calls to that host. oauth: raw mcp-v8 oauth
-    client-credentials fetch-header rules. Returns threadId + model.
+    See create_thread/send `sandbox` — a naive passthrough to the mcp-v8
+    config (raw/args/env/files/policies/bearer/oauth). `files` writes to the
+    container fs before mcp-v8 starts; use it to ship custom rego. Returns
+    threadId + model.
     """
     async with await Nanocodex.connect() as nc:
-        resp = await nc.create_thread(sandbox=_sandbox(bearer, oauth), model=model)
+        resp = await nc.create_thread(sandbox=_sandbox(sandbox), model=model)
         return {"threadId": resp["thread"]["id"], "model": resp.get("model")}
 
 
@@ -54,16 +78,16 @@ async def send(
     thread_id: str,
     prompt: str,
     timeout: float = 600.0,
-    bearer: Optional[dict[str, str]] = None,
-    oauth: Optional[list[str]] = None,
+    sandbox: Optional[dict] = None,
 ) -> dict:
     """Run a turn on a thread and wait for completion.
 
-    Returns the turn status, the agent's messages, and a compact transcript
-    of tool calls made during the turn.
+    `sandbox` is the same naive passthrough as create_thread (applied only
+    if the thread is not already running). Returns the turn status, the
+    agent's messages, and a compact transcript of tool calls.
     """
     async with await Nanocodex.connect() as nc:
-        await nc.resume_thread(thread_id, sandbox=_sandbox(bearer, oauth))
+        await nc.resume_thread(thread_id, sandbox=_sandbox(sandbox))
         result = await nc.run_turn(thread_id, prompt, timeout=timeout)
         tool_calls = [
             {"tool": f"{i.get('invocation', {}).get('server')}.{i.get('invocation', {}).get('tool')}",

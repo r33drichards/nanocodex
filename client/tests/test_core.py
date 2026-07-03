@@ -126,5 +126,50 @@ class CoreTest(unittest.IsolatedAsyncioTestCase):
             await self.nc.request("boom")
 
 
+class SandboxSpecTest(unittest.TestCase):
+    def test_default_uses_baked_policies_path(self):
+        cfg = SandboxSpec().to_config()["mcp_servers"]["js"]
+        self.assertEqual(cfg["command"], "/usr/local/bin/mcp-v8")
+        self.assertEqual(cfg["args"], ["--policies-json", "/app/policies/policies.json"])
+        self.assertNotIn("env", cfg)
+
+    def test_inline_policies_passed_as_json_arg(self):
+        pol = {"fetch": {"mode": "all", "policies": [{"url": "file:///x.rego"}]}}
+        cfg = SandboxSpec(policies=pol).to_config()["mcp_servers"]["js"]
+        self.assertEqual(cfg["args"][0], "--policies-json")
+        self.assertEqual(json.loads(cfg["args"][1]), pol)
+
+    def test_files_wrap_command_and_pass_content_via_env(self):
+        spec = SandboxSpec(
+            files={"/tmp/nanocodex/fetch.rego": "package mcp.fetch\ndefault allow = false\n"},
+            args=["--policies-json", "/tmp/nanocodex/policies.json"],
+        )
+        cfg = spec.to_config()["mcp_servers"]["js"]
+        self.assertEqual(cfg["command"], "/bin/sh")
+        self.assertEqual(cfg["args"][0], "-c")
+        script = cfg["args"][1]
+        # writes the file, then execs mcp-v8 with the resolved args as "$@"
+        self.assertIn("> /tmp/nanocodex/fetch.rego", script)
+        self.assertTrue(script.rstrip().endswith('exec /usr/local/bin/mcp-v8 "$@"'))
+        self.assertEqual(cfg["args"][2:], ["mcp-v8", "--policies-json", "/tmp/nanocodex/policies.json"])
+        # content travels through env, not argv
+        self.assertEqual(cfg["env"]["NANOCODEX_FILE_0"], "package mcp.fetch\ndefault allow = false\n")
+
+    def test_with_policy_files_helper(self):
+        spec = SandboxSpec.with_policy_files(
+            files={"/tmp/t/p.json": "{}", "/tmp/t/p.rego": "package mcp.fetch\n"},
+            policies_path="/tmp/t/p.json",
+        )
+        cfg = spec.to_config()["mcp_servers"]["js"]
+        self.assertEqual(cfg["command"], "/bin/sh")
+        self.assertIn("mcp-v8", cfg["args"])
+        self.assertEqual(cfg["args"][-2:], ["--policies-json", "/tmp/t/p.json"])
+
+    def test_raw_is_verbatim(self):
+        raw = {"command": "/x", "args": ["--foo"], "startup_timeout_sec": 5}
+        cfg = SandboxSpec(raw=raw, bearer=[("h", "t")]).to_config()
+        self.assertEqual(cfg, {"mcp_servers": {"js": raw}})
+
+
 if __name__ == "__main__":
     unittest.main()

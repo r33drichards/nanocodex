@@ -18,7 +18,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Optional
 
 import websockets
 
@@ -45,36 +45,102 @@ def default_ws_token() -> str:
     return ""
 
 
+DEFAULT_POLICY_DIR = "/tmp/nanocodex"
+
+
 @dataclass
 class SandboxSpec:
-    """Per-thread mcp-v8 sandbox configuration.
+    """Per-thread mcp-v8 sandbox configuration — a naive passthrough with
+    conveniences layered on top.
 
-    bearer: [(host, token)] static Authorization headers, host-scoped
-    oauth_rules: raw mcp-v8 --fetch-header oauth client-credentials rules
-    extra_args: any additional mcp-v8 CLI args (e.g. heap persistence)
+    Escape hatches (most raw first):
+      raw:       entire `mcp_servers.js` value, used verbatim (ignores all else)
+      args:      full mcp-v8 argv; None => sensible default (--policies-json)
+      env:       extra environment for the mcp-v8 process
+      files:     {container_path: content} written to the container fs BEFORE
+                 mcp-v8 starts (via an `sh -c` wrapper). This is how you ship
+                 custom rego: codex writes the file, then execs mcp-v8 pointed
+                 at it. Contents travel through env, so they are not in argv.
+
+    Conveniences (appended to args unless `args`/`raw` given):
+      policies:  policies.json content as a dict, passed INLINE via
+                 --policies-json (mcp-v8 accepts inline JSON or a path). Use
+                 this + `files` for custom rego referenced by file:// URLs.
+      bearer:    [(host, token)] static Authorization bearer(s), host-scoped
+      oauth_rules: raw mcp-v8 --fetch-header oauth client-credentials rules
+      extra_args: extra mcp-v8 args (e.g. heap persistence)
     """
 
+    raw: Optional[dict] = None
+    args: Optional[list[str]] = None
+    env: dict[str, str] = field(default_factory=dict)
+    files: dict[str, str] = field(default_factory=dict)
+    policies: Optional[dict] = None
     bearer: list[tuple[str, str]] = field(default_factory=list)
     oauth_rules: list[str] = field(default_factory=list)
     extra_args: list[str] = field(default_factory=list)
 
-    def to_config(self) -> dict:
-        args = ["--policies-json", POLICIES_JSON]
+    @classmethod
+    def with_policy_files(cls, files: dict[str, str], policies_path: str, **kw) -> "SandboxSpec":
+        """Convenience for custom rego: write `files` (e.g. a policies.json and
+        one or more .rego), then run mcp-v8 with --policies-json <policies_path>.
+        `policies_path` must be one of the written files' paths."""
+        return cls(files=dict(files), args=["--policies-json", policies_path], **kw)
+
+    def _mcp_args(self) -> list[str]:
+        if self.args is not None:
+            args = list(self.args)
+        elif self.policies is not None:
+            # Inline JSON: mcp-v8 treats a value starting with '{' as the
+            # document itself rather than a path.
+            args = ["--policies-json", json.dumps(self.policies)]
+        else:
+            args = ["--policies-json", POLICIES_JSON]
         for host, token in self.bearer:
             args += ["--fetch-header", f"host={host},header=Authorization,value=Bearer {token}"]
         for rule in self.oauth_rules:
             args += ["--fetch-header", rule]
         args += self.extra_args
-        return {
-            "mcp_servers": {
-                "js": {
-                    "command": MCP_V8_BIN,
-                    "args": args,
-                    "startup_timeout_sec": 30,
-                    "tool_timeout_sec": 180,
-                }
-            }
+        return args
+
+    def to_config(self) -> dict:
+        if self.raw is not None:
+            return {"mcp_servers": {"js": self.raw}}
+
+        mcp_args = self._mcp_args()
+        env = dict(self.env)
+
+        if self.files:
+            # Wrap: write each file (content via env, so it stays out of argv),
+            # then exec mcp-v8 with the resolved args as "$@".
+            writes = []
+            for i, (path, content) in enumerate(self.files.items()):
+                var = f"NANOCODEX_FILE_{i}"
+                env[var] = content
+                q = _sh_quote(path)
+                writes.append(f'mkdir -p "$(dirname {q})" && printf %s "${var}" > {q}')
+            script = "set -e; " + "; ".join(writes) + f'; exec {_sh_quote(MCP_V8_BIN)} "$@"'
+            command = "/bin/sh"
+            argv = ["-c", script, "mcp-v8", *mcp_args]
+        else:
+            command = MCP_V8_BIN
+            argv = mcp_args
+
+        server: dict = {
+            "command": command,
+            "args": argv,
+            "startup_timeout_sec": 30,
+            "tool_timeout_sec": 180,
         }
+        if env:
+            server["env"] = env
+        return {"mcp_servers": {"js": server}}
+
+
+def _sh_quote(s: str) -> str:
+    import shlex
+
+    return shlex.quote(s)
 
 
 class RpcError(RuntimeError):

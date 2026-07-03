@@ -28,14 +28,47 @@ _url_opt = typer.Option(DEFAULT_URL, "--url", envvar="NANOCODEX_URL")
 _token_opt = typer.Option(None, "--token", envvar="NANOCODEX_WS_TOKEN")
 
 
-def _sandbox(bearer: Optional[list[str]], oauth: Optional[list[str]]) -> SandboxSpec:
+def _sandbox(
+    bearer: Optional[list[str]],
+    oauth: Optional[list[str]],
+    policy: Optional[str] = None,
+    rego: Optional[list[str]] = None,
+    arg: Optional[list[str]] = None,
+) -> SandboxSpec:
+    """Build a sandbox from CLI options.
+
+    --policy PATH    local policies.json, passed inline (--policies-json <json>)
+    --rego  PATH     local .rego file(s), written into the container at
+                     /tmp/nanocodex/<basename> before mcp-v8 starts; reference
+                     them from your policies.json as file:///tmp/nanocodex/<name>
+    --arg   VALUE    extra raw mcp-v8 arg(s)
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    from .core import DEFAULT_POLICY_DIR
+
     pairs = []
     for entry in bearer or []:
-        host, _, token = entry.partition("=")
-        if not token:
+        host, _, tok = entry.partition("=")
+        if not tok:
             raise typer.BadParameter("--bearer expects HOST=TOKEN")
-        pairs.append((host, token))
-    return SandboxSpec(bearer=pairs, oauth_rules=list(oauth or []))
+        pairs.append((host, tok))
+
+    files: dict[str, str] = {}
+    for local in rego or []:
+        p = _Path(local)
+        files[f"{DEFAULT_POLICY_DIR}/{p.name}"] = p.read_text()
+
+    policies = _json.loads(_Path(policy).read_text()) if policy else None
+
+    return SandboxSpec(
+        policies=policies,
+        files=files,
+        bearer=pairs,
+        oauth_rules=list(oauth or []),
+        extra_args=list(arg or []),
+    )
 
 
 def _run(coro):
@@ -45,10 +78,20 @@ def _run(coro):
         raise typer.Exit(130)
 
 
+_bearer_opt = typer.Option(None, help="HOST=TOKEN static fetch bearer (repeatable)")
+_oauth_opt = typer.Option(None, help="mcp-v8 oauth client-credentials fetch-header rule")
+_policy_opt = typer.Option(None, help="local policies.json, passed inline to mcp-v8")
+_rego_opt = typer.Option(None, help="local .rego file written into the container before mcp-v8 starts (repeatable)")
+_arg_opt = typer.Option(None, "--arg", help="extra raw mcp-v8 arg (repeatable)")
+
+
 @app.command()
 def create(
-    bearer: Optional[list[str]] = typer.Option(None, help="HOST=TOKEN static fetch bearer (repeatable)"),
-    oauth: Optional[list[str]] = typer.Option(None, help="mcp-v8 oauth client-credentials fetch-header rule"),
+    bearer: Optional[list[str]] = _bearer_opt,
+    oauth: Optional[list[str]] = _oauth_opt,
+    policy: Optional[str] = _policy_opt,
+    rego: Optional[list[str]] = _rego_opt,
+    arg: Optional[list[str]] = _arg_opt,
     model: Optional[str] = None,
     url: str = _url_opt,
     token: Optional[str] = _token_opt,
@@ -56,7 +99,7 @@ def create(
     """Start a new thread with its own mcp-v8 sandbox."""
     async def go():
         async with await Nanocodex.connect(url, token) as nc:
-            resp = await nc.create_thread(sandbox=_sandbox(bearer, oauth), model=model)
+            resp = await nc.create_thread(sandbox=_sandbox(bearer, oauth, policy, rego, arg), model=model)
             typer.echo(resp["thread"]["id"])
             typer.echo(f"model: {resp.get('model')} ({resp.get('modelProvider')})", err=True)
     _run(go())
@@ -66,8 +109,11 @@ def create(
 def send(
     thread_id: str,
     prompt: str,
-    bearer: Optional[list[str]] = typer.Option(None, help="HOST=TOKEN static fetch bearer (repeatable)"),
-    oauth: Optional[list[str]] = typer.Option(None),
+    bearer: Optional[list[str]] = _bearer_opt,
+    oauth: Optional[list[str]] = _oauth_opt,
+    policy: Optional[str] = _policy_opt,
+    rego: Optional[list[str]] = _rego_opt,
+    arg: Optional[list[str]] = _arg_opt,
     timeout: float = 600.0,
     verbose: bool = typer.Option(False, "-v", "--verbose"),
     url: str = _url_opt,
@@ -76,7 +122,7 @@ def send(
     """Run a turn on a thread and stream it to completion."""
     async def go():
         async with await Nanocodex.connect(url, token) as nc:
-            await nc.resume_thread(thread_id, sandbox=_sandbox(bearer, oauth))
+            await nc.resume_thread(thread_id, sandbox=_sandbox(bearer, oauth, policy, rego, arg))
 
             def on_event(method, params):
                 if method == "item/completed":
