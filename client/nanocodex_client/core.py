@@ -459,11 +459,12 @@ class Nanocodex:
         resp = await self.request("thread/read", {"threadId": thread_id, "includeTurns": include_turns})
         return resp["thread"]
 
-    async def start_turn(self, thread_id: str, text: str) -> dict:
-        resp = await self.request("turn/start", {
-            "threadId": thread_id,
-            "input": [{"type": "text", "text": text}],
-        })
+    async def start_turn(self, thread_id: str, text: str | None = None,
+                         input: list[dict] | None = None) -> dict:
+        """Start a turn. Pass `text` for a simple text turn, or `input` with a
+        full codex UserInput list (e.g. text + image parts) for multimodal."""
+        items = input if input is not None else [{"type": "text", "text": text or ""}]
+        resp = await self.request("turn/start", {"threadId": thread_id, "input": items})
         return resp["turn"]
 
     async def steer_turn(self, thread_id: str, text: str) -> Any:

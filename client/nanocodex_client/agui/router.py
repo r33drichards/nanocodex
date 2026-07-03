@@ -78,21 +78,57 @@ def _approval_handler(nc: Nanocodex, thread_id: str):
     return handler
 
 
-def _trailing_user_text(messages: list) -> str:
-    """Extract only the new trailing user message(s) — never trust the replayed
-    transcript as history (Codex holds authoritative state). Take user messages
-    after the last assistant message."""
+def _image_url(source) -> str | None:
+    """AG-UI image source (url or base64 data) → a URL Codex accepts (a plain
+    URL, or a data: URL for base64)."""
+    if source is None:
+        return None
+    stype, value = getattr(source, "type", None), getattr(source, "value", None)
+    if not value:
+        return None
+    if stype == "url":
+        return value
+    if stype == "data":
+        if value.startswith("data:"):
+            return value
+        mime = getattr(source, "mime_type", None) or "image/png"
+        return f"data:{mime};base64,{value}"
+    return None
+
+
+def _trailing_user_input(messages: list) -> list[dict]:
+    """Extract only the new trailing user message(s) as a Codex UserInput list
+    (text + image parts). Never trust the replayed transcript as history (Codex
+    holds authoritative state): take user messages after the last assistant one.
+    Supports AG-UI content that is a plain string or a list of typed parts."""
     start = 0
     for i, m in enumerate(messages):
         if getattr(m, "role", None) == "assistant":
             start = i + 1
-    parts = []
+    out: list[dict] = []
     for m in messages[start:]:
-        if getattr(m, "role", None) == "user":
-            c = getattr(m, "content", None)
-            if isinstance(c, str) and c:
-                parts.append(c)
-    return "\n".join(parts)
+        if getattr(m, "role", None) != "user":
+            continue
+        content = getattr(m, "content", None)
+        if isinstance(content, str):
+            if content:
+                out.append({"type": "text", "text": content})
+        elif isinstance(content, list):
+            for part in content:
+                ptype = getattr(part, "type", None)
+                if ptype == "text":
+                    text = getattr(part, "text", None) or getattr(part, "value", None)
+                    if text:
+                        out.append({"type": "text", "text": text})
+                elif ptype == "image":
+                    url = _image_url(getattr(part, "source", None))
+                    if url:
+                        item = {"type": "image", "url": url}
+                        detail = getattr(getattr(part, "metadata", None) or object(), "detail", None)
+                        if detail:
+                            item["detail"] = detail
+                        out.append(item)
+    return out
 
 
 def _sandbox_for(session_id: str, approvals: bool = False) -> SandboxSpec:
@@ -153,8 +189,8 @@ def _wants_approvals(inp: RunAgentInput) -> bool:
 async def agui(request: Request):
     body = await request.json()
     inp = RunAgentInput.model_validate(body)
-    prompt = _trailing_user_text(inp.messages)
-    if not prompt:
+    user_input = _trailing_user_input(inp.messages)
+    if not user_input:
         raise HTTPException(status_code=400, detail="no new user message in RunAgentInput")
 
     # Reject a second concurrent turn on a known-busy thread up front.
@@ -194,7 +230,7 @@ async def agui(request: Request):
                 yield encoder.encode(e)
 
             notif = nc.notifications(codex_tid)
-            turn = await nc.start_turn(codex_tid, prompt)
+            turn = await nc.start_turn(codex_tid, input=user_input)
             turn_id = turn.get("id")
             async for method, params in notif:
                 if method == _APPROVAL:
