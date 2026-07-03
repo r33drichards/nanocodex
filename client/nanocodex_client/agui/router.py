@@ -18,7 +18,8 @@ from ag_ui.encoder import EventEncoder
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
-from ..core import Nanocodex, RpcError, SandboxSpec
+from ..core import Nanocodex, RpcError
+from .backends import backend_named, get_backends, instructions_for, sandbox_for
 from .mapper import (
     RunState,
     map_notification,
@@ -138,25 +139,6 @@ def _trailing_user_input(messages: list) -> list[dict]:
     return out
 
 
-def _sandbox_for(session_id: str, approvals: bool = False) -> SandboxSpec:
-    """Per-thread mcp-v8 sandbox: heap-dir + a stable, unique --session-id so
-    the sandbox is stateful within the thread and isolated across threads.
-
-    `approvals` opts the thread into human-in-the-loop: tools_approval="prompt"
-    makes Codex elicit approval before each tool call (surfaced to the frontend
-    via the /agui approval side-channel); the default "approve" auto-runs."""
-    return SandboxSpec(
-        args=[
-            "--policies-json", "/app/policies/policies.json",
-            "--heap-store", "dir",
-            "--heap-dir", f"/tmp/agui-heaps/{session_id}",
-            "--session-id", session_id,
-        ],
-        session_dir=f"/tmp/agui-sessions/{session_id}",
-        tools_approval="prompt" if approvals else "approve",
-    )
-
-
 # Codex still injects a generic "read-only filesystem / bash shell / /tmp
 # workspace" environment description even though nanocodex disables those tools.
 # These developer instructions correct that so the model doesn't waste turns
@@ -192,6 +174,15 @@ def _wants_approvals(inp: RunAgentInput) -> bool:
     return bool(fp.get("approvals", os.environ.get("AGUI_APPROVALS") == "1"))
 
 
+def _requested_image(inp: RunAgentInput) -> str | None:
+    """The runtime image (backend name) the frontend picked for a NEW thread.
+    Ignored for existing threads — a thread stays on the backend it was
+    created on. None means the default (first configured) backend."""
+    fp = inp.forwarded_props if isinstance(inp.forwarded_props, dict) else {}
+    image = fp.get("image")
+    return image if isinstance(image, str) and image else None
+
+
 def _codex_id_for(agui_thread_id: str) -> str | None:
     """Codex thread id for an AG-UI thread id, if we already know one.
 
@@ -203,38 +194,65 @@ def _codex_id_for(agui_thread_id: str) -> str | None:
     return b.codex_thread_id if b else None
 
 
-async def _resolve_or_create(nc: Nanocodex, agui_thread_id: str, approvals: bool) -> str:
-    """Map an AG-UI thread id to a live Codex thread, subscribing this
-    connection to its notifications. Resolution order:
+def _backends_preferring(known: str | None):
+    """All configured backends, the one named `known` (if any) first."""
+    backends = get_backends()
+    return sorted(backends, key=lambda b: b.name != known)
 
-      1. a binding we made earlier this session -> resume it;
-      2. treat the id as an existing Codex thread id and resume it (this is the
-         cross-session path: ids from `thread/list` are codex ids);
-      3. otherwise it's a fresh client-generated id -> create a new Codex thread
-         and bind the two ids.
+
+async def _resolve_or_create(
+    agui_thread_id: str, approvals: bool, image: str | None = None
+) -> tuple[Nanocodex, str]:
+    """Map an AG-UI thread id to a live Codex thread on the right backend
+    (runtime image). Returns (connection, codex thread id) with the connection
+    subscribed to the thread's notifications. Resolution order:
+
+      1. a binding we made earlier this session -> resume it on its backend;
+      2. treat the id as an existing Codex thread id and resume it, probing
+         each backend (the cross-session path: ids from `thread/list` are
+         codex ids — the listing also caches which backend owns each id, so
+         the first probe normally hits);
+      3. otherwise it's a fresh client-generated id -> create a new Codex
+         thread on the backend `image` names (default: the first configured
+         backend) and bind the two ids.
 
     Codex persists each thread's mcp-v8 sandbox config (including `--session-id`)
-    in its rollout, so a resumed thread reuses its original sandbox heap without
+    in its rollout, so a resumed thread reuses its original sandbox without
     us re-deriving anything."""
-    known = _codex_id_for(agui_thread_id)
-    if known:
-        await nc.resume_thread(known)
-        return known
-    try:
-        await nc.resume_thread(agui_thread_id)
-        # It was a real codex thread id; remember the identity for this session.
-        store.bind(agui_thread_id, agui_thread_id, ThreadStore.new_session_id())
-        return agui_thread_id
-    except RpcError:
-        pass
+    binding = store.get(agui_thread_id)
+    if binding:
+        backend = backend_named(get_backends(), binding.backend)
+        nc = await Nanocodex.connect(backend.url if backend else None)
+        await nc.resume_thread(binding.codex_thread_id)
+        return nc, binding.codex_thread_id
+
+    for backend in _backends_preferring(store.backend_of(agui_thread_id)):
+        nc = await Nanocodex.connect(backend.url)
+        try:
+            await nc.resume_thread(agui_thread_id)
+        except RpcError:
+            await nc.close()
+            continue
+        # It was a real codex thread id; remember identity + backend.
+        store.bind(agui_thread_id, agui_thread_id, ThreadStore.new_session_id(), backend.name)
+        return nc, agui_thread_id
+
+    backend = backend_named(get_backends(), image)
+    if backend is None:
+        raise ValueError(f"unknown image {image!r} (see GET /agui/images)")
+    nc = await Nanocodex.connect(backend.url)
     sid = ThreadStore.new_session_id()
-    resp = await nc.create_thread(
-        sandbox=_sandbox_for(sid, approvals), cwd="/tmp",
-        developer_instructions=NANOCODEX_INSTRUCTIONS,
-    )
+    try:
+        resp = await nc.create_thread(
+            sandbox=sandbox_for(backend, sid, approvals), cwd="/tmp",
+            developer_instructions=instructions_for(backend, NANOCODEX_INSTRUCTIONS),
+        )
+    except BaseException:
+        await nc.close()
+        raise
     codex_tid = resp["thread"]["id"]
-    store.bind(agui_thread_id, codex_tid, sid)
-    return codex_tid
+    store.bind(agui_thread_id, codex_tid, sid, backend.name)
+    return nc, codex_tid
 
 
 @router.post("/agui")
@@ -254,13 +272,13 @@ async def agui(request: Request):
     state = RunState(thread_id=inp.thread_id, run_id=inp.run_id)
 
     approvals = _wants_approvals(inp)
+    image = _requested_image(inp)
 
     async def stream():
         nc = None
         codex_tid = None
         try:
-            nc = await Nanocodex.connect()
-            codex_tid = await _resolve_or_create(nc, inp.thread_id, approvals)
+            nc, codex_tid = await _resolve_or_create(inp.thread_id, approvals, image)
 
             # HITL: intercept Codex approval elicitations and route them to the
             # frontend over this stream (instead of auto-approving).
@@ -301,16 +319,41 @@ async def agui(request: Request):
     return StreamingResponse(stream(), media_type=encoder.get_content_type())
 
 
+@router.get("/agui/images")
+async def list_images():
+    """Runtime images (backends) a new thread can be created on. The first is
+    the default; the frontend's new-thread picker renders this list and sends
+    the choice back as `forwardedProps.image` on the first run."""
+    return {"images": [
+        {"name": b.name, "default": i == 0, "languages": b.languages}
+        for i, b in enumerate(get_backends())
+    ]}
+
+
 @router.get("/agui/threads")
 async def list_threads(limit: int = 100):
-    """Codex is the source of truth for threads: list them (newest first) as
-    assistant-ui `ExternalStoreThreadData` for the thread-list adapter."""
-    nc = await Nanocodex.connect()
-    try:
-        page = await nc.list_threads(limit=limit)
-    finally:
-        await nc.close()
-    return {"threads": thread_summaries(page.get("data", []))}
+    """Codex is the source of truth for threads: list them (newest first,
+    merged across all configured backends) as assistant-ui
+    `ExternalStoreThreadData` for the thread-list adapter. Each row carries
+    the backend's image name, and the id -> backend mapping is cached so later
+    resumes/reads route straight to the owning backend. An unreachable backend
+    is skipped rather than failing the whole list."""
+    threads: list[dict] = []
+    for backend in get_backends():
+        try:
+            nc = await Nanocodex.connect(backend.url)
+        except Exception:
+            continue
+        try:
+            page = await nc.list_threads(limit=limit)
+        finally:
+            await nc.close()
+        for t in thread_summaries(page.get("data", [])):
+            t["image"] = backend.name
+            store.set_backend(t["id"], backend.name)
+            threads.append(t)
+    threads.sort(key=lambda t: t.get("createdAt") or 0, reverse=True)
+    return {"threads": threads}
 
 
 @router.get("/agui/threads/{agui_thread_id}/history")
@@ -318,15 +361,20 @@ async def thread_history(agui_thread_id: str):
     """Load a thread's transcript as AG-UI wire messages (what the frontend
     feeds `fromAgUiMessages`). The id is a codex thread id (from the list) or a
     this-session local id we can resolve."""
-    codex_tid = _codex_id_for(agui_thread_id) or agui_thread_id
-    nc = await Nanocodex.connect()
-    try:
-        thread = await nc.read_thread(codex_tid)
-    except RpcError:
-        raise HTTPException(status_code=404, detail="unknown thread")
-    finally:
+    binding = store.get(agui_thread_id)
+    codex_tid = (binding.codex_thread_id if binding else None) or agui_thread_id
+    known = (binding.backend if binding else None) or store.backend_of(codex_tid)
+    for backend in _backends_preferring(known):
+        nc = await Nanocodex.connect(backend.url)
+        try:
+            thread = await nc.read_thread(codex_tid)
+        except RpcError:
+            await nc.close()
+            continue
         await nc.close()
-    return {"messages": thread_to_agui_messages(thread)}
+        store.set_backend(codex_tid, backend.name)
+        return {"messages": thread_to_agui_messages(thread)}
+    raise HTTPException(status_code=404, detail="unknown thread")
 
 
 @router.get("/agui/threads/{agui_thread_id}")
@@ -347,7 +395,8 @@ async def steer(agui_thread_id: str, request: Request):
     text = body.get("text") or body.get("prompt")
     if not text:
         raise HTTPException(status_code=400, detail="missing 'text'")
-    nc = await Nanocodex.connect()
+    backend = backend_named(get_backends(), b.backend)
+    nc = await Nanocodex.connect(backend.url if backend else None)
     try:
         await nc.steer_turn(b.codex_thread_id, text)
     finally:

@@ -8,6 +8,10 @@
 #   # then point the bridge at ws://127.0.0.1:4520 and run smoke_realmodel.py
 
 x-image: &image ghcr.io/r33drichards/nanocodex:d09737542e45304e0e6a303a9bde7046d81963f4
+# Language-toolbox variant of the runtime (base + WASM engines at
+# /opt/languages, built by Dockerfile.languages / the ghcr workflow). Pin to a
+# sha tag once published, like the base image above.
+x-languages-image: &languages-image ghcr.io/r33drichards/nanocodex-languages:latest
 
 services:
   codex:
@@ -21,6 +25,27 @@ services:
     volumes:
       # The repo's Azure-provider config (tool lockdown + memories off) over the
       # image's baked config.
+      - ../codex-home/config.toml:/codex-home/config.toml:ro
+      - ../secrets/ws-token:/run/secrets/ws_token:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:4500/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # Second backend on the languages image, for the AG-UI "image" picker. Point
+  # the bridge at both:
+  #   NANOCODEX_BACKENDS='[{"name":"default","url":"ws://127.0.0.1:4520"},
+  #                        {"name":"languages","url":"ws://127.0.0.1:4521","languages":true}]'
+  codex-languages:
+    image: *languages-image
+    container_name: nanocodex-realmodel-codex-languages
+    ports:
+      - "4521:4500"
+    environment:
+      AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:?set AZURE_OPENAI_API_KEY}
+      RUST_LOG: ${RUST_LOG:-info}
+    volumes:
       - ../codex-home/config.toml:/codex-home/config.toml:ro
       - ../secrets/ws-token:/run/secrets/ws_token:ro
     healthcheck:

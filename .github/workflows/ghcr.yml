@@ -87,3 +87,44 @@ jobs:
             podman manifest add "${IMAGE}:${tag}" "docker://${IMAGE}:${{ github.sha }}-arm64"
             podman manifest push --all "${IMAGE}:${tag}" "docker://${IMAGE}:${tag}"
           done
+
+  # Language-toolbox variant: the just-pushed base image + the WASM engines
+  # from languages/ (Dockerfile.languages). A plain docker build — the layer
+  # only adds /opt/languages assets, no nix involved.
+  build-languages:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: login to ghcr
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: build and push
+        run: |
+          docker build -f Dockerfile.languages \
+            --build-arg BASE_IMAGE="${IMAGE}:${{ github.sha }}-${{ matrix.arch }}" \
+            -t "${IMAGE}-languages:${{ github.sha }}-${{ matrix.arch }}" .
+          docker push "${IMAGE}-languages:${{ github.sha }}-${{ matrix.arch }}"
+
+  manifest-languages:
+    needs: build-languages
+    runs-on: ubuntu-latest
+    steps:
+      - name: assemble and push multi-arch manifest
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+          for tag in latest "${{ github.sha }}"; do
+            podman manifest create "${IMAGE}-languages:${tag}"
+            podman manifest add "${IMAGE}-languages:${tag}" "docker://${IMAGE}-languages:${{ github.sha }}-amd64"
+            podman manifest add "${IMAGE}-languages:${tag}" "docker://${IMAGE}-languages:${{ github.sha }}-arm64"
+            podman manifest push --all "${IMAGE}-languages:${tag}" "docker://${IMAGE}-languages:${tag}"
+          done

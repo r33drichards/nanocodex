@@ -39,6 +39,21 @@ runtime/proxy layer. `@assistant-ui/react-ag-ui`'s `useAgUiRuntime` drives it.
   `js.get_execution_output` polls) render via a `tools.Fallback` `RunJsCard`
   that unwraps the MCP result envelope to the `data` (stdout/value) field.
 
+## Runtime-image picker (new-thread screen)
+
+A thread's sandbox can run on different **runtime images** — the deployment's
+backends, e.g. `default` (the base nanocodex image) and `languages`
+(`nanocodex-languages`: base + the WASM engines for picat/tla+/minizinc/
+autolisp/lua/craftos at `/opt/languages`). On the empty (new-thread) screen a
+dropdown (`app/image-picker.tsx`) lists `GET /agui/images`, preselected to the
+deployment's default image. The choice rides along as `forwardedProps.image`
+on each run — `app/agent.ts` subclasses `HttpAgent` to merge an instance-level
+`runProps` into every run's `forwardedProps` — and the bridge only honors it
+when the run **creates** the codex thread; existing threads stay on the
+backend they were created on, which is why the picker disappears once the
+thread has messages. With zero or one configured backend (bridge run without
+`NANOCODEX_BACKENDS`) the picker doesn't render at all.
+
 ## Image input
 
 The composer has an attach button and ⌘V paste. Images go through assistant-ui's
@@ -65,8 +80,14 @@ Real model (codex threads + run_js need a live LLM):
 # 1. realmodel codex (ws :4520)
 AZURE_OPENAI_API_KEY=... docker compose -f integration/docker-compose.realmodel.yml -p agui-realmodel up -d --wait
 
-# 2. bridge (:8132)
+# 2. bridge (:8132) — single backend…
 NANOCODEX_URL=ws://127.0.0.1:4520 NANOCODEX_WS_TOKEN=nanocodex-dev-ws-token-change-me \
+  client/.venv/bin/uvicorn nanocodex_client.agui.app:app --host 127.0.0.1 --port 8132 --app-dir client
+
+#    …or both images (enables the new-thread runtime-image picker; the
+#    realmodel compose runs codex-languages on :4521)
+NANOCODEX_BACKENDS='[{"name":"default","url":"ws://127.0.0.1:4520"},{"name":"languages","url":"ws://127.0.0.1:4521","languages":true}]' \
+NANOCODEX_WS_TOKEN=nanocodex-dev-ws-token-change-me \
   client/.venv/bin/uvicorn nanocodex_client.agui.app:app --host 127.0.0.1 --port 8132 --app-dir client
 
 # 3. frontend (:3100)
@@ -106,7 +127,7 @@ FRONTEND_URL=http://localhost:3100 client/.venv/bin/python frontend/e2e/test_ass
 `data-testid` hooks: `thread-list-item`, `new-thread-btn`, `composer-input`,
 `composer-send`, `attach-btn`, `attach-preview`, `user-message`,
 `assistant-message`, `run-js-card`, `run-js-status`, `run-js-code`,
-`run-js-result`.
+`run-js-result`, `image-picker`, `image-select`.
 
 ## Not yet ported from the CopilotKit version
 

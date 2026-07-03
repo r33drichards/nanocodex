@@ -162,6 +162,42 @@ for that thread only. The core sends:
 URL; header rules decide which hosts get credentials). Tighten it if you want
 an allowlist — see `policies/README.md`.
 
+### Runtime images: default vs `nanocodex-languages`
+
+The base image stays minimal. A second, optional image —
+**`nanocodex-languages`** (`Dockerfile.languages`) — layers the mcp-js
+"toolbox" WASM language engines onto it at `/opt/languages/`: picat, tla+,
+minizinc, autolisp, lua, craftos, plus a generated `bootstrap.js` adding jsx,
+markdown, and mermaid helpers (assets in `languages/`, vendored from
+open-agents' `deploy/mcp-js`). CI publishes it as
+`ghcr.io/r33drichards/nanocodex-languages`.
+
+Run it as a second app-server (see the `codex-languages` service in
+`docker-compose.yml`, port 4510) and point the AG-UI bridge at both:
+
+```bash
+NANOCODEX_BACKENDS='[
+  {"name": "default", "url": "ws://127.0.0.1:4500"},
+  {"name": "languages", "url": "ws://127.0.0.1:4510", "languages": true}
+]'
+```
+
+The bridge then exposes `GET /agui/images` (the frontend's new-thread picker
+renders it; first entry = default) and creates each thread on the backend the
+picker named — `forwardedProps.image` on the first run. Threads on a
+languages backend get a different mcp-v8 preset
+(`client/nanocodex_client/agui/backends.py`): the six `--wasm-module`
+engines, a persistent per-thread `/work` filesystem (`--fs-store dir`,
+`--fs-passthrough`, policy narrowed by `languages/filesystem.rego`), and **no
+heap persistence** — mcp-v8 rejects `--heap-store` combined with
+`--wasm-module` (heap snapshots run in a SnapshotCreator isolate that
+disables WebAssembly), so cross-call state lives in `/work` instead. In a
+languages thread the model loads the helpers with
+`(0,eval)(await fs.readFile('/opt/languages/bootstrap.js'))`.
+
+When `NANOCODEX_BACKENDS` is unset the bridge uses the single `NANOCODEX_URL`
+backend and everything behaves exactly as before.
+
 ### Naive passthrough & custom per-thread policies
 
 The `sandbox` field is a layered passthrough to that `mcp_servers.js` config,
@@ -211,7 +247,9 @@ anything shared: `openssl rand -hex 32 > secrets/ws-token`.
 
 ```
 Dockerfile             multi-stage build: codex app-server + mcp-v8 → one runtime image
-docker-compose.yml     the test rig
+Dockerfile.languages   base image + WASM language engines at /opt/languages (nanocodex-languages)
+languages/             engine assets for Dockerfile.languages (vendored wasm + bootstrap generator)
+docker-compose.yml     the test rig (codex + codex-languages)
 codex-home/config.toml global codex config (tool lockdown + API-key model providers)
 policies/              mcp-v8 OPA/rego policy enabling fetch()
 secrets/ws-token       websocket capability token (dev fixture)

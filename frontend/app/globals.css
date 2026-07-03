@@ -330,3 +330,27 @@ body {
   font-weight: 600;
   margin-right: 0.35rem;
 }
+
+/* runtime-image picker (new-thread screen only) */
+.image-picker {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  margin-top: 0.9rem;
+  font-size: 13px;
+}
+
+.image-picker-label {
+  color: #666;
+}
+
+.image-picker-select {
+  padding: 0.25rem 0.5rem;
+  border: 1px solid #d0d0d8;
+  border-radius: 6px;
+  background: #fff;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+}
