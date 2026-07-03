@@ -7,10 +7,10 @@
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    # mcp-v8: build from the mcp-js v0.18.1 release tag (has --config and OAuth
-    # fetch headers; PRs #184/#192). Its flake already handles the rusty_v8
-    # prefetch and cargo vendor hash. Pinned to a release, not our fork branch.
-    mcp-js.url = "github:r33drichards/mcp-js/v0.18.1";
+    # mcp-v8: v0.18.1 (--config, OAuth fetch headers) plus the stdio-cluster and
+    # --session-id patches needed for the per-thread learner topology. Same
+    # Cargo.lock as v0.18.1, so the flake's vendor hash still applies.
+    mcp-js.url = "github:r33drichards/mcp-js/claude/stdio-cluster-learner";
     # codex fork: source only — its in-tree flake builds the whole workspace,
     # which can't vendor hermetically (libwebrtc git submodule, no v8
     # archive). We build just the codex-app-server binary ourselves; that

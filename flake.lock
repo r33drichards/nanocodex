@@ -42,16 +42,16 @@
         "rust-overlay": "rust-overlay"
       },
       "locked": {
-        "lastModified": 1783047035,
-        "narHash": "sha256-UeINsH8WpQmiFvzP4RvhKsu2pvZWAKx6T16hSRSGCXY=",
+        "lastModified": 1783052626,
+        "narHash": "sha256-V/QL5Ph6WEL+/20DZ1zfVC86kXvxeR7mZa8Wa2x/Uv4=",
         "owner": "r33drichards",
         "repo": "mcp-js",
-        "rev": "9b88f4a8d8dbf4b9aeeba5289e4063639cdf4b1d",
+        "rev": "bc9fd2284731c9ed85569686a15346cc6b64cb83",
         "type": "github"
       },
       "original": {
         "owner": "r33drichards",
-        "ref": "v0.18.1",
+        "ref": "claude/stdio-cluster-learner",
         "repo": "mcp-js",
         "type": "github"
       }

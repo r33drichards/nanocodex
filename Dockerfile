@@ -9,8 +9,10 @@ ARG RUST_IMAGE=rust:1.95-bookworm
 # ── mcp-v8 builder ────────────────────────────────────────────────────────
 FROM ${RUST_IMAGE} AS mcpjs-builder
 ARG MCPJS_REPO=https://github.com/r33drichards/mcp-js.git
-# v0.18.1 release: has --config (PR #192) and OAuth fetch headers (PR #184).
-ARG MCPJS_REF=v0.18.1
+# v0.18.1 (--config PR #192, OAuth headers PR #184) + stdio-cluster/--session-id
+# patches (superset of v0.18.1; needed for the per-thread learner topology in
+# docker-compose.cluster.yml, backward-compatible for the default stdio setup).
+ARG MCPJS_REF=claude/stdio-cluster-learner
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl python3 ca-certificates git \
     && rm -rf /var/lib/apt/lists/*

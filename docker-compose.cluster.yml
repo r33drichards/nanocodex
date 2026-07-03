@@ -1,0 +1,114 @@
+# Cluster topology: stateful, resumable per-thread sandboxes.
+#
+#   minio   — S3 object storage for heap snapshots + fs blobs (shared)
+#   leader  — long-lived mcp-js node (http + cluster) holding Raft leadership
+#             and replicating session/heap-tag/fs-label metadata
+#   codex   — the app server; per thread it spawns ONE stdio mcp-v8 learner
+#             that --joins the leader --join-as-learner (see client/cluster.py),
+#             keyed to a --session-id, with heap+fs on S3/MinIO.
+#
+# Requires the mcp-v8 build with the stdio-cluster + --session-id patches
+# (MCPJS_REF=claude/stdio-cluster-learner).
+#
+#   AZURE_OPENAI_API_KEY=... docker compose -f docker-compose.cluster.yml up --build
+
+services:
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-minio}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-minio12345}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # Create the bucket once MinIO is up.
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set m http://minio:9000 ${S3_ACCESS_KEY:-minio} ${S3_SECRET_KEY:-minio12345} &&
+      mc mb -p m/${S3_BUCKET:-nanocodex} && echo bucket ready"
+
+  leader:
+    build:
+      context: .
+      args:
+        MCPJS_REF: claude/stdio-cluster-learner
+    image: nanocodex:cluster
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      AWS_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY:-minio}
+      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY:-minio12345}
+      AWS_REGION: ${S3_REGION:-us-east-1}
+      RUST_LOG: ${RUST_LOG:-info}
+    entrypoint: ["/usr/local/bin/mcp-v8"]
+    command:
+      - "--http-port"
+      - "8080"
+      - "--bind-host"
+      - "0.0.0.0"
+      - "--cluster-port"
+      - "7000"
+      - "--node-id"
+      - "leader"
+      - "--advertise-addr"
+      - "leader:7000"
+      - "--heap-store"
+      - "s3"
+      - "--fs-store"
+      - "s3"
+      - "--s3-bucket"
+      - "${S3_BUCKET:-nanocodex}"
+      - "--policies-json"
+      - "/app/policies/policies.json"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/mcp"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  codex:
+    build:
+      context: .
+      args:
+        MCPJS_REF: claude/stdio-cluster-learner
+    image: nanocodex:cluster
+    depends_on:
+      leader:
+        condition: service_healthy
+    ports:
+      - "4500:4500"
+    environment:
+      AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      RUST_LOG: ${RUST_LOG:-info}
+    secrets:
+      - ws_token
+    volumes:
+      - codex-data:/codex-home/sqlite
+      - codex-sessions:/codex-home/sessions
+    # (Uses the image's default codex-app-server entrypoint/CMD.)
+
+secrets:
+  ws_token:
+    file: ./secrets/ws-token
+
+volumes:
+  minio-data:
+  codex-data:
+  codex-sessions:
