@@ -36,3 +36,7 @@ view_image_tool = false
 # and the passive screen-context memory sidecar.
 memories = false
 chronicle = false
+# NOTE: codex's other built-in tools (task plan, goals, multi-agent, web/tool
+# search, MCP-resource inspection) are left at their defaults — enabled — on
+# purpose. Only the fs/exec tools are locked down; run_js is the primary
+# execution surface but not the only tool. (TODO: make this set configurable.)

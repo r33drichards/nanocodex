@@ -423,10 +423,12 @@ class Nanocodex:
 
     # ── thread ops ───────────────────────────────────────────────────────
     async def create_thread(self, sandbox: SandboxSpec | None = None, model: str | None = None,
-                            cwd: str = "/tmp") -> dict:
+                            cwd: str = "/tmp", developer_instructions: str | None = None) -> dict:
         params: dict = {"cwd": cwd, "config": (sandbox or SandboxSpec()).to_config()}
         if model:
             params["model"] = model
+        if developer_instructions:
+            params["developerInstructions"] = developer_instructions
         return await self.request("thread/start", params)
 
     async def resume_thread(self, thread_id: str, sandbox: SandboxSpec | None = None) -> dict:

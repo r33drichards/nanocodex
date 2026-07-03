@@ -114,6 +114,36 @@ def _sandbox_for(session_id: str, approvals: bool = False) -> SandboxSpec:
     )
 
 
+# Codex still injects a generic "read-only filesystem / bash shell / /tmp
+# workspace" environment description even though nanocodex disables those tools.
+# These developer instructions correct that so the model doesn't waste turns
+# discovering the real capabilities (it has exactly one tool: the run_js V8
+# sandbox; fetch works; no shell/fs/process).
+# Correct codex's misleading generic environment framing (bash/read-only-fs/
+# /tmp) and the run_js language facts that are ALWAYS true. It deliberately does
+# NOT assert which sandbox capabilities (fetch, fs, subprocess, module imports)
+# exist — those are set by this deployment's mcp-js policy config and vary — so
+# a deployment should append/override with AGUI_INSTRUCTIONS to describe its own
+# enabled capabilities.
+_DEFAULT_INSTRUCTIONS = (
+    "You are running in nanocodex. For executing code or processing data, use the "
+    "`run_js` sandboxed V8 JavaScript runtime. IMPORTANT: despite any environment "
+    "description mentioning a bash shell, a read-only filesystem, or a /tmp "
+    "workspace, you do NOT have codex shell, filesystem, or `process` access here — "
+    "those tools are disabled. (Your other tools — task plan, goals, web/tool "
+    "search, MCP-resource inspection — work as usual.)\n\n"
+    "Inside run_js: code runs in a fresh V8 isolate each call (state persists across "
+    "calls only if heap persistence is enabled) and at MODULE TOP LEVEL — so a "
+    "top-level `return` is a SyntaxError; end with a bare expression or use "
+    "`console.log(...)` to produce output. Prefer computing with run_js over doing "
+    "arithmetic or data work by hand; do not attempt a shell or local filesystem."
+)
+
+# Deployment-configurable: set AGUI_INSTRUCTIONS to fully replace the developer
+# instructions (e.g. to spell out the capabilities your mcp-js policy enables).
+NANOCODEX_INSTRUCTIONS = os.environ.get("AGUI_INSTRUCTIONS", _DEFAULT_INSTRUCTIONS)
+
+
 def _wants_approvals(inp: RunAgentInput) -> bool:
     fp = inp.forwarded_props if isinstance(inp.forwarded_props, dict) else {}
     return bool(fp.get("approvals", os.environ.get("AGUI_APPROVALS") == "1"))
@@ -145,7 +175,10 @@ async def agui(request: Request):
             b = store.get(inp.thread_id)
             if b is None:
                 sid = ThreadStore.new_session_id()
-                resp = await nc.create_thread(sandbox=_sandbox_for(sid, approvals), cwd="/tmp")
+                resp = await nc.create_thread(
+                    sandbox=_sandbox_for(sid, approvals), cwd="/tmp",
+                    developer_instructions=NANOCODEX_INSTRUCTIONS,
+                )
                 codex_tid = resp["thread"]["id"]
                 store.bind(inp.thread_id, codex_tid, sid)
             else:
