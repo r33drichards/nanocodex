@@ -11,6 +11,7 @@ dependencies = [
     "fastmcp>=2.0",
     "tomli-w>=1.0",
     "betterproto==2.0.0b7",
+    "ag-ui-protocol==0.1.19",
 ]
 
 [project.scripts]
