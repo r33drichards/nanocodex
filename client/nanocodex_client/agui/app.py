@@ -19,7 +19,8 @@ from .router import router
 
 app = FastAPI(title="nanocodex AG-UI bridge", version="0.1.0")
 
-# AG-UI clients (CopilotKit/Dojo) run from other origins in dev.
+# AG-UI clients (the assistant-ui frontend, AG-UI Dojo, ...) run from other
+# origins in dev and hit the bridge directly.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=os.environ.get("AGUI_CORS_ORIGINS", "*").split(","),

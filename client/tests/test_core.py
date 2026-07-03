@@ -74,11 +74,13 @@ async def fake_server(ws):
                 ]}]}
             await send({"id": mid, "result": {"thread": thread}})
         elif method == "thread/list":
+            # Matches the real app-server envelope: page under `data`, plus
+            # `nextCursor` / `backwardsCursor` (NOT a `threads` key).
             if params.get("cursor"):
-                await send({"id": mid, "result": {"threads": [{**THREAD, "id": "t-2"}],
+                await send({"id": mid, "result": {"data": [{**THREAD, "id": "t-2"}],
                                                   "nextCursor": None}})
             else:
-                await send({"id": mid, "result": {"threads": [THREAD], "nextCursor": "page2"}})
+                await send({"id": mid, "result": {"data": [THREAD], "nextCursor": "page2"}})
         elif method == "boom":
             await send({"id": mid, "error": {"code": -1, "message": "kaboom"}})
         else:

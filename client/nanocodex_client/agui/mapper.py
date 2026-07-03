@@ -131,3 +131,96 @@ def map_notification(method: str, params: dict, state: RunState) -> list[BaseEve
         return run_error(state, str(p.get("error", p)))
 
     return []
+
+
+# ── history / listing (codex thread as source of truth) ──────────────────────
+# The frontend's assistant-ui threadList adapter loads a thread's transcript via
+# `fromAgUiMessages(...)`, which accepts AG-UI wire messages: user/assistant with
+# `content` (string or InputContent[]) and optional `toolCalls`, plus a separate
+# `{role:"tool", toolCallId, content}`. These pure functions convert a Codex
+# `thread/read` result and a `thread/list` page into those shapes.
+
+
+def _user_content(item: dict):
+    """Codex userMessage.content (list of {type,text|image}) → AG-UI content.
+    Text-only collapses to a string; images become InputContent url parts."""
+    content = item.get("content")
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    parts: list[dict] = []
+    texts: list[str] = []
+    has_image = False
+    for c in content:
+        ctype = c.get("type")
+        if ctype == "text" and c.get("text"):
+            texts.append(c["text"])
+            parts.append({"type": "text", "text": c["text"]})
+        elif ctype == "image":
+            url = c.get("url") or c.get("image_url")
+            if url:
+                has_image = True
+                # AG-UI image InputContent shape: a typed `source` (a data: or
+                # https: URL is a "url" source). assistant-ui's fromAgUiMessages
+                # turns these into message attachments.
+                parts.append({"type": "image", "source": {"type": "url", "value": url}})
+    if has_image:
+        return parts
+    return "\n".join(texts)
+
+
+def thread_to_agui_messages(thread: dict) -> list[dict]:
+    """Flatten a Codex `thread/read` result's turns into AG-UI wire messages
+    (the input `fromAgUiMessages` expects). Reasoning items are dropped (history
+    reasoning is often redacted/empty); tool calls become an assistant toolCall
+    message plus a tool-result message so run_js history renders as cards."""
+    out: list[dict] = []
+    for turn in thread.get("turns", []) or []:
+        for item in turn.get("items", []) or []:
+            itype, iid = item.get("type"), item.get("id", "")
+            if itype == "userMessage":
+                out.append({"id": iid, "role": "user", "content": _user_content(item)})
+            elif itype == "agentMessage":
+                out.append({"id": iid, "role": "assistant", "content": item.get("text", "")})
+            elif itype == "mcpToolCall":
+                args = item.get("arguments")
+                out.append({
+                    "id": f"{iid}-call",
+                    "role": "assistant",
+                    "content": "",
+                    "toolCalls": [{
+                        "id": iid,
+                        "type": "function",
+                        "function": {
+                            "name": _tool_name(item),
+                            "arguments": json.dumps(args) if not isinstance(args, str) else args,
+                        },
+                    }],
+                })
+                out.append({
+                    "id": iid,
+                    "role": "tool",
+                    "toolCallId": iid,
+                    "content": _tool_result_text(item),
+                })
+    return out
+
+
+def thread_summaries(page_data: list[dict]) -> list[dict]:
+    """Codex `thread/list` `data` rows → assistant-ui ExternalStoreThreadData
+    (`{id, title, status:"regular"}`). Title prefers the thread name, then the
+    first-user-message preview, then the id."""
+    out: list[dict] = []
+    for t in page_data or []:
+        tid = t.get("id")
+        if not tid:
+            continue
+        title = t.get("name") or t.get("preview") or tid
+        out.append({
+            "id": tid,
+            "title": title,
+            "status": "archived" if t.get("archived") else "regular",
+            "createdAt": t.get("createdAt"),
+        })
+    return out

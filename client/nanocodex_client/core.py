@@ -449,7 +449,9 @@ class Nanocodex:
         cursor = None
         while True:
             page = await self.list_threads(cursor=cursor)
-            for t in page.get("threads", []):
+            # The app-server returns the page under `data` (with `nextCursor` /
+            # `backwardsCursor`), NOT `threads`.
+            for t in page.get("data", []):
                 yield t
             cursor = page.get("nextCursor")
             if not cursor:

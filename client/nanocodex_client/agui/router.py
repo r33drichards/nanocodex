@@ -18,8 +18,15 @@ from ag_ui.encoder import EventEncoder
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
-from ..core import Nanocodex, SandboxSpec
-from .mapper import RunState, map_notification, run_error, run_started
+from ..core import Nanocodex, RpcError, SandboxSpec
+from .mapper import (
+    RunState,
+    map_notification,
+    run_error,
+    run_started,
+    thread_summaries,
+    thread_to_agui_messages,
+)
 from .threads import ThreadStore
 
 router = APIRouter()
@@ -185,6 +192,51 @@ def _wants_approvals(inp: RunAgentInput) -> bool:
     return bool(fp.get("approvals", os.environ.get("AGUI_APPROVALS") == "1"))
 
 
+def _codex_id_for(agui_thread_id: str) -> str | None:
+    """Codex thread id for an AG-UI thread id, if we already know one.
+
+    Codex is the source of truth for threads: an id that came from the thread
+    list (`GET /agui/threads`) IS a codex thread id, so it resolves to itself
+    even across bridge restarts (the in-memory store only remembers this-session
+    bindings for brand-new threads whose local id differs from the codex id)."""
+    b = store.get(agui_thread_id)
+    return b.codex_thread_id if b else None
+
+
+async def _resolve_or_create(nc: Nanocodex, agui_thread_id: str, approvals: bool) -> str:
+    """Map an AG-UI thread id to a live Codex thread, subscribing this
+    connection to its notifications. Resolution order:
+
+      1. a binding we made earlier this session -> resume it;
+      2. treat the id as an existing Codex thread id and resume it (this is the
+         cross-session path: ids from `thread/list` are codex ids);
+      3. otherwise it's a fresh client-generated id -> create a new Codex thread
+         and bind the two ids.
+
+    Codex persists each thread's mcp-v8 sandbox config (including `--session-id`)
+    in its rollout, so a resumed thread reuses its original sandbox heap without
+    us re-deriving anything."""
+    known = _codex_id_for(agui_thread_id)
+    if known:
+        await nc.resume_thread(known)
+        return known
+    try:
+        await nc.resume_thread(agui_thread_id)
+        # It was a real codex thread id; remember the identity for this session.
+        store.bind(agui_thread_id, agui_thread_id, ThreadStore.new_session_id())
+        return agui_thread_id
+    except RpcError:
+        pass
+    sid = ThreadStore.new_session_id()
+    resp = await nc.create_thread(
+        sandbox=_sandbox_for(sid, approvals), cwd="/tmp",
+        developer_instructions=NANOCODEX_INSTRUCTIONS,
+    )
+    codex_tid = resp["thread"]["id"]
+    store.bind(agui_thread_id, codex_tid, sid)
+    return codex_tid
+
+
 @router.post("/agui")
 async def agui(request: Request):
     body = await request.json()
@@ -208,18 +260,7 @@ async def agui(request: Request):
         codex_tid = None
         try:
             nc = await Nanocodex.connect()
-            b = store.get(inp.thread_id)
-            if b is None:
-                sid = ThreadStore.new_session_id()
-                resp = await nc.create_thread(
-                    sandbox=_sandbox_for(sid, approvals), cwd="/tmp",
-                    developer_instructions=NANOCODEX_INSTRUCTIONS,
-                )
-                codex_tid = resp["thread"]["id"]
-                store.bind(inp.thread_id, codex_tid, sid)
-            else:
-                codex_tid = b.codex_thread_id
-                await nc.resume_thread(codex_tid)
+            codex_tid = await _resolve_or_create(nc, inp.thread_id, approvals)
 
             # HITL: intercept Codex approval elicitations and route them to the
             # frontend over this stream (instead of auto-approving).
@@ -258,6 +299,34 @@ async def agui(request: Request):
                 await nc.close()
 
     return StreamingResponse(stream(), media_type=encoder.get_content_type())
+
+
+@router.get("/agui/threads")
+async def list_threads(limit: int = 100):
+    """Codex is the source of truth for threads: list them (newest first) as
+    assistant-ui `ExternalStoreThreadData` for the thread-list adapter."""
+    nc = await Nanocodex.connect()
+    try:
+        page = await nc.list_threads(limit=limit)
+    finally:
+        await nc.close()
+    return {"threads": thread_summaries(page.get("data", []))}
+
+
+@router.get("/agui/threads/{agui_thread_id}/history")
+async def thread_history(agui_thread_id: str):
+    """Load a thread's transcript as AG-UI wire messages (what the frontend
+    feeds `fromAgUiMessages`). The id is a codex thread id (from the list) or a
+    this-session local id we can resolve."""
+    codex_tid = _codex_id_for(agui_thread_id) or agui_thread_id
+    nc = await Nanocodex.connect()
+    try:
+        thread = await nc.read_thread(codex_tid)
+    except RpcError:
+        raise HTTPException(status_code=404, detail="unknown thread")
+    finally:
+        await nc.close()
+    return {"messages": thread_to_agui_messages(thread)}
 
 
 @router.get("/agui/threads/{agui_thread_id}")

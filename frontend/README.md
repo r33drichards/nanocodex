@@ -1,160 +1,117 @@
-# nanocodex frontend — CopilotKit + AG-UI
+# nanocodex frontend — assistant-ui + AG-UI
 
-A Next.js (App Router) chat UI for the nanocodex **AG-UI bridge** (Phase 2).
-The bridge (`client/nanocodex_client/agui/`) speaks the AG-UI protocol over SSE;
-this app renders it with [CopilotKit](https://copilotkit.ai), including a custom
-renderer for `run_js` tool calls.
+A Next.js (App Router) chat UI for the nanocodex **AG-UI bridge**, built on
+[assistant-ui](https://www.assistant-ui.com) with **codex as the source of
+truth for threads**. Thread list, thread switching, and message history all come
+from codex (via the bridge); the sandbox for each thread is a per-thread
+mcp-v8 `run_js` runtime.
 
 ## Architecture / wiring
 
 ```
-browser  ──►  /api/copilotkit  ──►  CopilotRuntime + HttpAgent  ──►  AG-UI bridge  ──►  codex
-(CopilotKit)   (Next route)         (@ag-ui/client)                  POST /agui (SSE)
+browser ─ useAgUiRuntime(HttpAgent) ─► bridge POST /agui (SSE)   ─► codex turn
+        ├ threadList.threads         ─► bridge GET  /agui/threads ─► codex thread/list
+        └ threadList.onSwitchToThread─► bridge GET  /agui/threads/{id}/history ─► codex thread/read
 ```
 
-- **`app/api/copilotkit/route.ts`** — a `CopilotRuntime` that registers the
-  bridge as an AG-UI agent named `nanocodex`:
-  `new HttpAgent({ url: BRIDGE_URL + "/agui" })`. It is exposed through
-  `copilotRuntimeNextJSAppRouterEndpoint`. Because the AG-UI agent **is** the
-  model path (no separate LLM), the runtime uses CopilotKit's agent-only
-  `ExperimentalEmptyAdapter`. The runtime proxies browser ⇄ bridge and forwards
-  the CopilotKit `threadId`/`runId` into each `POST /agui`.
-- **`app/page.tsx`** — `<CopilotKit runtimeUrl="/api/copilotkit" agent="nanocodex">`
-  wrapping `<CopilotChat>` from `@copilotkit/react-ui`.
-- **`run_js` renderer** — a **wildcard** `useCopilotAction({ name: "*", available: "disabled", render })`
-  renders every agent tool call as a collapsible `RunJsCard`: the JS from the
-  call args (a dark code block) plus a result pane. The bridge forwards the raw
-  MCP result (`{content:[{text:"{...}"}]}`); the card unwraps it to the
-  meaningful `data` field (stdout / value). The wildcard is used (rather than a
-  single `name: "run_js"`) because the deterministic codex flow emits both
-  `js.run_js` (returns an `execution_id`) and `js.get_execution_output` polls
-  (carry the stdout) — both render as cards, and the poll card shows `4`.
+The AG-UI agent (`@ag-ui/client` `HttpAgent`) runs **client-side** and talks
+straight to the bridge (which CORS-allows the browser) — there is no Next.js
+runtime/proxy layer. `@assistant-ui/react-ag-ui`'s `useAgUiRuntime` drives it.
+
+- **`app/page.tsx`** — builds one `HttpAgent`, a `threadList` adapter, and an
+  image `attachments` adapter, then `useAgUiRuntime({ agent, adapters })` inside
+  `<AssistantRuntimeProvider>`.
+  - **Threads are codex threads.** `threadList.threads` is filled from
+    `GET /agui/threads` (refreshed on mount and whenever a run finishes).
+    `onSwitchToThread(id)` points the agent at that codex thread
+    (`agent.threadId = id`, so the bridge *resumes* it) and hydrates the
+    transcript with `fromAgUiMessages(...)` → `fromThreadMessageLike(...)` from
+    `GET /agui/threads/{id}/history`.
+  - **New thread** = a fresh `agent.threadId` (generateId); the bridge's
+    resolve-or-create then makes a new codex thread on the first turn. It shows
+    up in the sidebar (under its codex id) once the run completes.
+  - The run's `threadId` is simply `agent.threadId` — that is how a codex id
+    resumes vs. a fresh id creates (see the bridge's `_resolve_or_create`).
+- **`app/thread.tsx`** — the UI, composed from assistant-ui primitives:
+  `ThreadList` sidebar (`ThreadListPrimitive` + `ThreadListItemPrimitive`), the
+  `Thread` (`ThreadPrimitive` viewport + messages), and a `Composer`
+  (`ComposerPrimitive`) with image attach + ⌘V paste. `run_js` (and the
+  `js.get_execution_output` polls) render via a `tools.Fallback` `RunJsCard`
+  that unwraps the MCP result envelope to the `data` (stdout/value) field.
 
 ## Image input
 
-`<CopilotChat imageUploadsEnabled />` adds an attach button **and** ⌘V paste
-(CopilotKit's built-in `handlePaste`). Images are sent as AG-UI image content;
-the bridge maps them to codex `Image { url }` (a `data:` URL for pasted bytes,
-or a plain URL passed through) so the model's vision sees them — arbitrarily
-many per message. Tests: `e2e/test_copilotkit_images.py` (deterministic:
-attach + paste produce an attachment preview; set `AGUI_VISION_SMOKE=1` to also
-assert a real vision model identifies the color). Backend mapping is unit-tested
-in `client/tests/test_agui_image_input.py`.
+The composer has an attach button and ⌘V paste. Images go through assistant-ui's
+`SimpleImageAttachmentAdapter`; `@assistant-ui/react-ag-ui` forwards them as
+AG-UI image content, and the bridge maps that to a codex `Image { url }` (a
+`data:` URL for pasted/attached bytes) so the model's vision sees them —
+arbitrarily many per message. Backend mapping is unit-tested in
+`client/tests/test_agui_image_input.py`.
 
-## Human-in-the-loop (HITL) approvals + steer
+## Versions
 
-A **"require approvals"** toggle in the header opts the thread into HITL. When on,
-Codex elicits approval before each tool call; the bridge surfaces each as an
-AG-UI `CUSTOM` `approval_request` event (and an `approval_resolved` when
-answered). The UI renders an Approve/Deny panel per pending approval and POSTs
-the decision back to unblock the paused turn. A secondary **steer** input injects
-mid-turn text into the active thread.
+Pinned and dedup-verified to a single `@assistant-ui/core@0.2.19`:
+`@assistant-ui/react@0.14.24`, `@assistant-ui/react-ag-ui@0.0.43`,
+`@ag-ui/client@0.0.57`, `next@15.5.7`, `react`/`react-dom@19`.
 
-### How it works at CopilotKit 1.62.2 / @ag-ui/client 0.0.57
-
-- **Enabling approvals — `forwardedProps.approvals` via CopilotKit `properties`.**
-  `<CopilotKit properties={{ approvals }}>` (`app/page.tsx`). At this version the
-  `properties` prop is fed to `CopilotKitCore`, which sends it verbatim as the
-  AG-UI run's `forwardedProps` (`@copilotkit/core`: *"Properties sent as
-  `forwardedProps` to the AG-UI agent"*). The runtime forwards it to the
-  `HttpAgent`, and the bridge reads `forwarded_props.approvals`. Default is
-  **off** (auto-approve). No server-side flag is needed — but the bridge also
-  honors `AGUI_APPROVALS=1` as an independent default.
-- **Observing the `CUSTOM` approval events — a server-side tap.** At 1.62.2 the
-  Next endpoint (`copilotRuntimeNextJSAppRouterEndpoint`) is the v2 AG-UI
-  passthrough and the `HttpAgent` runs **server-side** (the browser has no agent
-  instance to `subscribe()` to, and neither `useAgent`/`useCopilotKit` nor
-  `subscribeToAgentWithOptions`' `onCustomEvent` are on the public hook surface).
-  So `app/api/copilotkit/route.ts` subclasses `HttpAgent` and taps its rxjs event
-  stream (`super.run(input).pipe(tap(...))`) — a side-effect-only passthrough —
-  recording `approval_request`/`approval_resolved` into an in-process store
-  (`app/lib/approvals-store.ts`). The browser observes them over a **same-origin
-  SSE proxy** (`GET /api/approvals/stream`, an `EventSource` in `app/page.tsx`) —
-  no direct browser↔bridge connection, no CORS. The store replays currently-
-  pending approvals to a late-connecting subscriber. The EventSource is only
-  opened while approvals are enabled (a persistent connection would otherwise
-  keep the page from reaching network-idle).
-- **Answering / steering — same-origin proxies.** Approve/Deny POSTs to
-  `POST /api/approvals/{id}` → bridge `POST /agui/approvals/{id}` `{approve}`.
-  Steer POSTs to `POST /api/steer` → bridge
-  `POST /agui/threads/{aguiThreadId}/steer` `{text}`; the active AG-UI threadId
-  is captured server-side from the most recent run (the tap records
-  `input.threadId`).
-
-`data-testid` hooks: `approvals-toggle`, `approval-request`, `approve-btn`,
-`deny-btn`, `steer-input`, `steer-send`.
-
-### Version-specific notes
-
-Pinned: `@copilotkit/{react-core,react-ui,runtime}@1.62.2`, `@ag-ui/client@0.0.57`
-(exports `HttpAgent`), `next@15.5.7`, `react`/`react-dom@19`.
-
-- On the wire the tool names are namespaced (`js.run_js`, not `run_js`), so a
-  single `useCopilotAction({ name: "run_js" })` would not match — the wildcard
-  `name: "*"` catch-all renderer is the reliable choice at this version.
-- The runtime path (`CopilotRuntime` + `HttpAgent`) is the standard pattern and
-  worked without falling back to the direct-agent approach.
-- Custom-renderer states are `inProgress | executing | complete` (the card shows
-  the result pane only once `complete`).
+`NEXT_PUBLIC_BRIDGE_URL` (default `http://127.0.0.1:8132`) points the browser at
+the bridge.
 
 ## Run it
 
-Prereqs: the deterministic backend + bridge (see repo root & `client/`). All
-model-free, no API keys.
+Real model (codex threads + run_js need a live LLM):
 
 ```bash
-# 1. backend (fakemodel + codex; codex ws on :4510)
-docker compose -f integration/docker-compose.codex.yml -p agui up -d --wait
+# 1. realmodel codex (ws :4520)
+AZURE_OPENAI_API_KEY=... docker compose -f integration/docker-compose.realmodel.yml -p agui-realmodel up -d --wait
 
-# 2. bridge (:8130)
-NANOCODEX_URL=ws://127.0.0.1:4510 NANOCODEX_WS_TOKEN=nanocodex-dev-ws-token-change-me \
-  client/.venv/bin/uvicorn nanocodex_client.agui.app:app --host 127.0.0.1 --port 8130 --app-dir client
+# 2. bridge (:8132)
+NANOCODEX_URL=ws://127.0.0.1:4520 NANOCODEX_WS_TOKEN=nanocodex-dev-ws-token-change-me \
+  client/.venv/bin/uvicorn nanocodex_client.agui.app:app --host 127.0.0.1 --port 8132 --app-dir client
 
-# 3. frontend (:3000)
-cd frontend
-npm install
-BRIDGE_URL=http://127.0.0.1:8130 npm run dev
+# 3. frontend (:3100)
+cd frontend && npm install
+NEXT_PUBLIC_BRIDGE_URL=http://127.0.0.1:8132 npm run dev -- -p 3100
 ```
 
-Open http://localhost:3000 and type `RUNJS::console.log(2+2)` — codex runs
-`run_js` with that JS and the card shows `result: 4`.
-
-`BRIDGE_URL` (default `http://127.0.0.1:8130`) points the runtime at the bridge.
+Open http://localhost:3100 — the sidebar lists your codex threads; pick one to
+load its history, or start a new one and ask it to `Use run_js to compute 6*7`.
 
 ## Test
 
-End-to-end browser test (Playwright, Chromium — already in `client/.venv`):
+Browser e2e (Playwright, Chromium — already in `client/.venv`). Needs a live
+model, so it is a smoke test (not CI):
 
 ```bash
-# One-shot: brings up backend + bridge + frontend, runs the browser test, tears down.
-frontend/e2e/run.sh
+# One-shot: brings up realmodel codex + bridge + frontend, runs the e2e, tears down.
+AZURE_OPENAI_API_KEY=... frontend/e2e/run.sh
+AZURE_OPENAI_API_KEY=... AGUI_VISION_SMOKE=1 frontend/e2e/run.sh   # also assert vision
 ```
 
 Or against an already-running stack:
 
 ```bash
-FRONTEND_URL=http://localhost:3000 client/.venv/bin/python frontend/e2e/test_copilotkit_browser.py
+FRONTEND_URL=http://localhost:3100 client/.venv/bin/python frontend/e2e/test_assistant_ui.py
+FRONTEND_URL=http://localhost:3100 client/.venv/bin/python frontend/e2e/test_assistant_ui_images.py
 ```
 
-The test loads the app, sends `RUNJS::console.log(2+2)`, and asserts the turn
-completes and a `run_js` card renders with the result value `4` visible
-(`data-testid` hooks: `run-js-card`, `run-js-result`).
+- **`test_assistant_ui.py`** (self-seeding): runs a `run_js` turn on a new
+  thread and asserts the result card + `42`; reloads and asserts the thread
+  persisted in the codex-backed list and its transcript (run_js card included)
+  rehydrates on click — i.e. codex is the source of truth.
+- **`test_assistant_ui_images.py`**: attach + ⌘V paste each add an image preview
+  (deterministic); `AGUI_VISION_SMOKE=1` also sends it and asserts the model
+  names the color.
 
-### HITL approval browser test
+`data-testid` hooks: `thread-list-item`, `new-thread-btn`, `composer-input`,
+`composer-send`, `attach-btn`, `attach-preview`, `user-message`,
+`assistant-message`, `run-js-card`, `run-js-status`, `run-js-code`,
+`run-js-result`.
 
-```bash
-# One-shot: distinct compose project (agui-hitl) + non-default ports
-# (bridge :8131, frontend :3001); brings the stack up, runs the test, tears down.
-frontend/e2e/run_approvals.sh
-```
+## Not yet ported from the CopilotKit version
 
-`frontend/e2e/test_copilotkit_approvals.py` enables the approvals toggle, sends
-`RUNJS::console.log(2+2)`, then **approves** each queued approval until the run
-completes and the result `4` renders — and a **deny** variant confirms a declined
-tool call ends the turn without hanging. "Turn finished" is asserted via the
-input's `data-copilotkit-in-progress="false"` (the send button is disabled once
-the input clears, so its enabled state is racy).
-
-> Note: the compose file uses fixed `container_name`s, so `run.sh` (project
-> `agui`) and `run_approvals.sh` (project `agui-hitl`) cannot run concurrently;
-> `run_approvals.sh` force-clears the sibling stack before starting.
+HITL **approvals** and mid-turn **steer** are not wired in this UI yet. The plan
+is to use assistant-ui's native `useAgUiInterrupts` / `useAgUiSteerAway` (which
+`@assistant-ui/react-ag-ui` supports) rather than the old CUSTOM-event side
+channel — that requires the bridge to emit AG-UI interrupt events. The bridge's
+approval plumbing (`/agui/approvals`, `tools_approval="prompt"`) is still there.

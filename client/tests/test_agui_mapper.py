@@ -68,3 +68,79 @@ class MapperTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HistoryMapperTest(unittest.TestCase):
+    """thread/read → AG-UI wire messages, and thread/list data → summaries."""
+
+    THREAD = {
+        "id": "019f-abc",
+        "turns": [
+            {"items": [
+                {"type": "userMessage", "id": "u1",
+                 "content": [{"type": "text", "text": "say hi in one word"}]},
+                {"type": "reasoning", "id": "r1", "text": ""},
+                {"type": "agentMessage", "id": "a1", "text": "Hi"},
+            ]},
+            {"items": [
+                {"type": "userMessage", "id": "u2",
+                 "content": [{"type": "text", "text": "run it"}]},
+                {"type": "mcpToolCall", "id": "c1", "server": "js", "tool": "run_js",
+                 "arguments": {"code": "2+2"}, "result": "4"},
+                {"type": "agentMessage", "id": "a2", "text": "The answer is 4"},
+            ]},
+        ],
+    }
+
+    def test_history_flattens_turns_in_order(self):
+        from nanocodex_client.agui.mapper import thread_to_agui_messages
+        msgs = thread_to_agui_messages(self.THREAD)
+        # reasoning dropped; tool call → assistant(toolCalls) + tool result
+        self.assertEqual(
+            [(m["role"], m["id"]) for m in msgs],
+            [("user", "u1"), ("assistant", "a1"),
+             ("user", "u2"), ("assistant", "c1-call"), ("tool", "c1"), ("assistant", "a2")],
+        )
+
+    def test_history_user_text_collapses_to_string(self):
+        from nanocodex_client.agui.mapper import thread_to_agui_messages
+        msgs = thread_to_agui_messages(self.THREAD)
+        self.assertEqual(msgs[0]["content"], "say hi in one word")
+
+    def test_history_tool_call_shape(self):
+        from nanocodex_client.agui.mapper import thread_to_agui_messages
+        msgs = thread_to_agui_messages(self.THREAD)
+        call = next(m for m in msgs if m["id"] == "c1-call")
+        tc = call["toolCalls"][0]
+        self.assertEqual(tc["function"]["name"], "js.run_js")
+        self.assertEqual(json.loads(tc["function"]["arguments"]), {"code": "2+2"})
+        result = next(m for m in msgs if m["role"] == "tool")
+        self.assertEqual(result["toolCallId"], "c1")
+        self.assertEqual(result["content"], "4")
+
+    def test_history_user_with_image_becomes_parts(self):
+        from nanocodex_client.agui.mapper import thread_to_agui_messages
+        t = {"turns": [{"items": [{"type": "userMessage", "id": "u1", "content": [
+            {"type": "text", "text": "what is this"},
+            {"type": "image", "url": "data:image/png;base64,QUJD"},
+        ]}]}]}
+        msgs = thread_to_agui_messages(t)
+        parts = msgs[0]["content"]
+        self.assertIsInstance(parts, list)
+        # AG-UI image InputContent shape (a typed `source`), which
+        # fromAgUiMessages turns into a message attachment.
+        self.assertEqual(
+            parts[1],
+            {"type": "image", "source": {"type": "url", "value": "data:image/png;base64,QUJD"}},
+        )
+
+    def test_summaries_prefers_name_then_preview(self):
+        from nanocodex_client.agui.mapper import thread_summaries
+        data = [
+            {"id": "t1", "name": "My Thread", "preview": "hello", "createdAt": 1},
+            {"id": "t2", "preview": "just preview", "createdAt": 2},
+            {"id": "t3", "createdAt": 3, "archived": True},
+        ]
+        out = thread_summaries(data)
+        self.assertEqual([s["title"] for s in out], ["My Thread", "just preview", "t3"])
+        self.assertEqual([s["status"] for s in out], ["regular", "regular", "archived"])
