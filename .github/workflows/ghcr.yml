@@ -46,9 +46,13 @@ jobs:
           # tar to stdout; docker-archive sources must be seekable, so land it
           # in a file first.
           ./result > /tmp/nanocodex-image.tar
-          nix run nixpkgs#skopeo -- login ghcr.io \
-            -u "${{ github.actor }}" --password "${{ secrets.GITHUB_TOKEN }}"
-          nix run nixpkgs#skopeo -- copy --insecure-policy \
+          # The runner ships a v1-format /etc/containers/registries.conf that
+          # nix's skopeo refuses to parse — point it at a minimal v2 one, and
+          # use --dest-creds instead of a login step (no auth-file handling).
+          echo 'unqualified-search-registries = ["docker.io"]' > /tmp/registries.conf
+          nix run nixpkgs#skopeo -- --registries-conf /tmp/registries.conf \
+            copy --insecure-policy \
+            --dest-creds "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" \
             docker-archive:/tmp/nanocodex-image.tar \
             "docker://${IMAGE}:${{ github.sha }}-${{ matrix.arch }}"
 
