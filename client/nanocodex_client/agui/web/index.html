@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>nanocodex AG-UI reference client</title>
+<style>
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 0; padding: 1.5rem; max-width: 760px; }
+  h1 { font-size: 1.1rem; }
+  #transcript { border: 1px solid #ddd; border-radius: 8px; padding: 1rem; min-height: 220px; margin: 1rem 0; }
+  .msg { margin: .5rem 0; padding: .5rem .75rem; border-radius: 8px; white-space: pre-wrap; }
+  .assistant { background: #eef4ff; }
+  .tool { background: #f3f0ff; font-family: ui-monospace, monospace; font-size: 13px; }
+  .tool .name { font-weight: 600; }
+  .tool .result { color: #0a7; }
+  .error { background: #ffecec; color: #a00; }
+  form { display: flex; gap: .5rem; }
+  #prompt { flex: 1; padding: .5rem; }
+  button { padding: .5rem 1rem; }
+  #status { color: #666; font-size: 12px; }
+</style>
+</head>
+<body>
+  <h1>nanocodex AG-UI reference client</h1>
+  <p id="status" data-testid="status">idle</p>
+  <div id="transcript" data-testid="transcript"></div>
+  <form id="form">
+    <input id="prompt" data-testid="prompt" placeholder="RUNJS::console.log(2+2)" autocomplete="off" />
+    <button id="send" data-testid="send" type="submit">Send</button>
+  </form>
+
+<script>
+const BRIDGE = location.origin;
+const threadId = "t-" + Math.random().toString(36).slice(2);
+const transcript = document.getElementById("transcript");
+const status = document.getElementById("status");
+
+function bubble(cls, testid) {
+  const el = document.createElement("div");
+  el.className = "msg " + cls;
+  if (testid) el.dataset.testid = testid;
+  transcript.appendChild(el);
+  return el;
+}
+
+async function run(prompt) {
+  status.textContent = "running";
+  const runId = "r-" + Math.random().toString(36).slice(2);
+  const body = {
+    threadId, runId,
+    messages: [{ id: "u-" + Date.now(), role: "user", content: prompt }],
+    tools: [], context: [], state: {}, forwardedProps: {},
+  };
+  const resp = await fetch(BRIDGE + "/agui", {
+    method: "POST",
+    headers: { "content-type": "application/json", "accept": "text/event-stream" },
+    body: JSON.stringify(body),
+  });
+  const reader = resp.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  const msgs = {};       // messageId -> element (assistant text)
+  const tools = {};      // toolCallId -> {el, resultEl}
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    const frames = buf.split("\n\n");
+    buf = frames.pop();
+    for (const frame of frames) {
+      const line = frame.split("\n").find(l => l.startsWith("data:"));
+      if (!line) continue;
+      const ev = JSON.parse(line.slice(5).trim());
+      handle(ev, msgs, tools);
+    }
+  }
+  // Preserve a terminal status (finished/error); only mark "done" if the stream
+  // ended without one (unexpected close).
+  if (!/finished|error/.test(status.textContent)) status.textContent = "done";
+}
+
+function handle(ev, msgs, tools) {
+  switch (ev.type) {
+    case "RUN_STARTED": status.textContent = "run started"; break;
+    case "TEXT_MESSAGE_START": msgs[ev.messageId] = bubble("assistant", "assistant-message"); break;
+    case "TEXT_MESSAGE_CONTENT":
+      (msgs[ev.messageId] || bubble("assistant", "assistant-message")).textContent += ev.delta; break;
+    case "TOOL_CALL_START": {
+      const el = bubble("tool", "tool-call");
+      const name = document.createElement("div"); name.className = "name";
+      name.textContent = "🔧 " + ev.toolCallName; el.appendChild(name);
+      const res = document.createElement("div"); res.className = "result";
+      res.dataset.testid = "tool-result"; el.appendChild(res);
+      tools[ev.toolCallId] = { el, resultEl: res }; break;
+    }
+    case "TOOL_CALL_ARGS": {
+      const t = tools[ev.toolCallId];
+      if (t) { const a = document.createElement("div"); a.textContent = "args: " + ev.delta; t.el.insertBefore(a, t.resultEl); }
+      break;
+    }
+    case "TOOL_CALL_RESULT": {
+      const t = tools[ev.toolCallId];
+      if (t) t.resultEl.textContent = "→ " + ev.content; break;
+    }
+    case "RUN_FINISHED": status.textContent = "finished"; break;
+    case "RUN_ERROR": { bubble("error", "run-error").textContent = "error: " + ev.message; status.textContent = "error"; break; }
+  }
+}
+
+document.getElementById("form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const p = document.getElementById("prompt").value.trim();
+  if (p) run(p).catch(err => { bubble("error", "run-error").textContent = "fetch error: " + err; status.textContent = "error"; });
+});
+</script>
+</body>
+</html>
