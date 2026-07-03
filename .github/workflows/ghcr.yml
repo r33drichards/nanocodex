@@ -1,0 +1,67 @@
+name: build and push to ghcr
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Two full Rust workspaces compile in the nix store; stock runners run
+      # out of disk without this.
+      - name: free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /opt/hostedtoolcache /usr/share/dotnet /opt/ghc
+          df -h /
+
+      - uses: DeterminateSystems/nix-installer-action@v16
+
+      - name: nix build image
+        run: |
+          nix build .#image --print-build-logs
+          df -h /
+
+      - name: push to ghcr (skopeo)
+        run: |
+          # streamLayeredImage output is a script that writes a docker-archive
+          # tar to stdout; docker-archive sources must be seekable, so land it
+          # in a file first.
+          ./result > /tmp/nanocodex-image.tar
+          nix run nixpkgs#skopeo -- login ghcr.io \
+            -u "${{ github.actor }}" --password "${{ secrets.GITHUB_TOKEN }}"
+          nix run nixpkgs#skopeo -- copy --insecure-policy \
+            docker-archive:/tmp/nanocodex-image.tar \
+            "docker://${IMAGE}:${{ github.sha }}-${{ matrix.arch }}"
+
+  manifest:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: assemble and push multi-arch manifest
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+          for tag in latest "${{ github.sha }}"; do
+            podman manifest create "${IMAGE}:${tag}"
+            podman manifest add "${IMAGE}:${tag}" "docker://${IMAGE}:${{ github.sha }}-amd64"
+            podman manifest add "${IMAGE}:${tag}" "docker://${IMAGE}:${{ github.sha }}-arm64"
+            podman manifest push --all "${IMAGE}:${tag}" "docker://${IMAGE}:${tag}"
+          done
