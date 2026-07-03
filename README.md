@@ -18,8 +18,8 @@ deployment where **the only tool the model can use is a per-thread
 
 ```
 ┌──────────────┐  JSON-RPC over websocket   ┌───────────────────────────────┐
-│ your client  │ ─────────────────────────► │ codex app-server              │
-│ (demo.py)    │  thread/start { config:    │  (fs/exec tools disabled)     │
+│ CLI / HTTP / │ ─────────────────────────► │ codex app-server              │
+│ MCP frontends│  thread/start { config:    │  (fs/exec tools disabled)     │
 └──────────────┘   mcp_servers.js = ... }   │                               │
                                             │  per thread:                  │
                                             │  ┌───────────┐  MCP/stdio     │
@@ -36,36 +36,80 @@ deployment where **the only tool the model can use is a per-thread
 # 1. Build the image (compiles codex app-server + mcp-v8 from the pinned forks)
 docker compose build
 
-# 2. Start the app server (uses OPENAI_API_KEY for model auth)
-OPENAI_API_KEY=sk-... docker compose up -d
+# 2. Start the app server (model auth via the provider in codex-home/config.toml)
+AZURE_OPENAI_API_KEY=... docker compose up -d     # or OPENAI_API_KEY=...
 
-# 3. Talk to it
-pip install websockets
-python3 client/demo.py "Use run_js to fetch https://example.com and summarize it"
+# 3. Install the client package (core lib + CLI + HTTP + MCP frontends)
+pip install -e client/
+
+# 4. Talk to it
+nanocodex create
+nanocodex send <THREAD_ID> "use run_js to fetch https://example.com and summarize it"
 ```
 
-### Per-thread fetch auth
+## The client package (`client/`)
 
-Give one thread a static bearer token for a host (injected only on requests to
-that host, never shown to the model):
+One core (`nanocodex_client.core`) holding all the business logic —
+connection/handshake, per-thread sandbox specs, thread lifecycle, turn
+streaming — with three interchangeable frontends on top:
+
+| frontend | run it | what it is |
+|---|---|---|
+| CLI | `nanocodex …` | Typer app, one subcommand per operation |
+| HTTP | `nanocodex api` (port 8788) | FastAPI bridge: REST + SSE + ws proxy |
+| MCP | `nanocodex mcp` | FastMCP server over stdio |
+
+Config for all three: `NANOCODEX_URL` (default `ws://127.0.0.1:4500`) and
+`NANOCODEX_WS_TOKEN` (defaults to reading `secrets/ws-token`).
+
+### CLI
 
 ```bash
-python3 client/demo.py \
-  --bearer api.github.com "$GITHUB_TOKEN" \
-  "Use run_js to fetch https://api.github.com/user and tell me the login"
+nanocodex create                          # thread/start → prints thread id
+nanocodex send <ID> "prompt"              # thread/resume + turn/start, streams to completion
+nanocodex steer <ID> "extra guidance"     # turn/steer into the in-flight turn (2nd terminal)
+nanocodex messages <ID> [--json]          # thread/read {includeTurns} → full transcript
+nanocodex subscribe <ID>                  # thread/resume + live-tail notifications
+nanocodex threads                         # thread/list (paged)
+nanocodex rpc thread/list --params '{"limit": 5}'   # naive passthrough: any method
 ```
 
-Or an auto-refreshing OAuth 2.0 client-credentials token:
+Per-thread fetch auth (also on `send`, applied if the thread isn't running):
 
 ```bash
-python3 client/demo.py \
-  --oauth 'host=api.example.com,header=Authorization,token_url=https://issuer.example.com/oauth/token,client_id=abc,client_secret=xyz,scope=read:all' \
-  "Use run_js to fetch https://api.example.com/v1/things"
+nanocodex create --bearer "api.github.com=$GITHUB_TOKEN"
+nanocodex create --oauth 'host=api.example.com,header=Authorization,token_url=https://issuer/token,client_id=abc,client_secret=xyz'
 ```
 
-Both map to mcp-v8 `--fetch-header` rules passed in the thread's
-`mcp_servers.js.args`. Start two threads with different tokens and you get two
-independent sandboxes with different credentials.
+### FastAPI bridge
+
+`nanocodex api` then:
+
+```
+POST /threads                    {"model"?, "bearer"?: {host: token}, "oauth"?: [rule]}
+GET  /threads
+GET  /threads/{id}/messages      (?raw=true for the untouched thread/read payload)
+POST /threads/{id}/turns         {"prompt": "...", "timeout"?: 600}   blocks until done
+POST /threads/{id}/steer         {"prompt": "..."}
+GET  /threads/{id}/events        SSE live-tail (event: <method>, data: <params>)
+POST /rpc                        {"method": "...", "params": {...}}   naive passthrough
+WS   /proxy                      naive frame-for-frame proxy to codex (auth added for you)
+```
+
+The `/proxy` websocket is the "just give me codex" escape hatch: speak the
+full app-server protocol (your own `initialize`, any method) through the
+bridge without knowing the capability token.
+
+### FastMCP server
+
+`nanocodex mcp` exposes tools `create_thread`, `send`, `steer`, `messages`,
+`list_threads`, and `codex_rpc` (naive passthrough) over stdio — so any MCP
+client can operate codex threads that each own an mcp-v8 sandbox. E.g. for
+Claude Code:
+
+```bash
+claude mcp add nanocodex -- /path/to/client/.venv/bin/nanocodex mcp
+```
 
 ## How the pieces fit
 
@@ -89,7 +133,7 @@ and whatever MCP servers the thread declares.
 ### Per-thread mcp-v8 (client-side)
 
 `thread/start` carries a `config` map that is merged over the global config
-for that thread only. The demo client sends:
+for that thread only. The core sends:
 
 ```json
 {
@@ -126,24 +170,28 @@ anything shared: `openssl rand -hex 32 > secrets/ws-token`.
 ## Repo layout
 
 ```
-Dockerfile            multi-stage build: codex app-server + mcp-v8 → one runtime image
-docker-compose.yml    the test rig
-codex-home/config.toml global codex config (tool lockdown + API-key model provider)
-policies/             mcp-v8 OPA/rego policy enabling fetch()
-secrets/ws-token      websocket capability token (dev fixture)
-client/demo.py        JSON-RPC websocket client: start thread → run turn → stream output
+Dockerfile             multi-stage build: codex app-server + mcp-v8 → one runtime image
+docker-compose.yml     the test rig
+codex-home/config.toml global codex config (tool lockdown + API-key model providers)
+policies/              mcp-v8 OPA/rego policy enabling fetch()
+secrets/ws-token       websocket capability token (dev fixture)
+client/                nanocodex-client python package
+  nanocodex_client/core.py         shared business logic (asyncio)
+  nanocodex_client/cli.py          Typer CLI (`nanocodex`)
+  nanocodex_client/api.py          FastAPI bridge (`nanocodex api`)
+  nanocodex_client/mcp_server.py   FastMCP server (`nanocodex mcp`)
 ```
 
 ## Notes
 
-- Model auth uses the `openai-api-key` model provider in `config.toml`
-  (`env_key = "OPENAI_API_KEY"`), so no `codex login` is needed. To use
-  ChatGPT auth instead, remove `model_provider` from the config and mount an
-  authenticated `CODEX_HOME` volume.
+- Model auth: `config.toml` ships two API-key providers — `azure`
+  (`AZURE_OPENAI_API_KEY`, the default) and `openai-api-key`
+  (`OPENAI_API_KEY`). Switch with `model_provider`. For ChatGPT auth instead,
+  remove `model_provider` and mount an authenticated `CODEX_HOME` volume.
 - mcp-v8 runs stateless per thread by default. To persist JS heap state
-  across `run_js` calls within a thread, add
-  `"--heap-store", "dir", "--heap-dir", "/data/heaps"` to the thread's args
-  (and give each thread a distinct dir).
+  across `run_js` calls within a thread, pass
+  `SandboxSpec(extra_args=["--heap-store", "dir", "--heap-dir", "/data/heaps/<id>"])`
+  (give each thread a distinct dir).
 - Secrets passed via `args` are visible in the container's process list. For
   stricter hygiene, write a JSON rules file into the container and pass
   `--fetch-header-config <path>` (or the `MCP_V8_FETCH_HEADER_CONFIG` env var

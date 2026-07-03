@@ -1,0 +1,22 @@
+[project]
+name = "nanocodex-client"
+version = "0.1.0"
+description = "Operate a nanocodex app server (codex + per-thread mcp-v8 sandboxes): core client, Typer CLI, FastAPI bridge, FastMCP server"
+requires-python = ">=3.11"
+dependencies = [
+    "websockets>=13",
+    "typer>=0.12",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "fastmcp>=2.0",
+]
+
+[project.scripts]
+nanocodex = "nanocodex_client.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["nanocodex_client"]
