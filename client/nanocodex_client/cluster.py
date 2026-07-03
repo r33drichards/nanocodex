@@ -56,6 +56,10 @@ class ClusterSettings:
             "AWS_ACCESS_KEY_ID": self.s3_access_key_id,
             "AWS_SECRET_ACCESS_KEY": self.s3_secret_access_key,
             "AWS_REGION": self.s3_region,
+            # MinIO/S3-compatible stores serve host/bucket/key, not
+            # bucket.host/key; without this the SDK can't resolve the endpoint
+            # ("dispatch failure" on heap/fs save).
+            "AWS_S3_FORCE_PATH_STYLE": "true",
         }
 
 

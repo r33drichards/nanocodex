@@ -19,9 +19,9 @@ services:
     environment:
       MINIO_ROOT_USER: ${S3_ACCESS_KEY:-minio}
       MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-minio12345}
-    ports:
-      - "9000:9000"
-      - "9001:9001"
+    # No host port mapping: the leader and per-thread learners reach MinIO over
+    # the compose network as minio:9000. Add a `ports:` block only to browse the
+    # console from the host.
     volumes:
       - minio-data:/data
     healthcheck:
@@ -42,11 +42,7 @@ services:
       mc mb -p m/${S3_BUCKET:-nanocodex} && echo bucket ready"
 
   leader:
-    build:
-      context: .
-      args:
-        MCPJS_REF: claude/stdio-cluster-learner
-    image: nanocodex:cluster
+    image: ghcr.io/r33drichards/nanocodex:d09737542e45304e0e6a303a9bde7046d81963f4
     depends_on:
       minio-init:
         condition: service_completed_successfully
@@ -55,6 +51,8 @@ services:
       AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY:-minio}
       AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY:-minio12345}
       AWS_REGION: ${S3_REGION:-us-east-1}
+      # MinIO needs path-style S3 addressing (host/bucket/key).
+      AWS_S3_FORCE_PATH_STYLE: "true"
       RUST_LOG: ${RUST_LOG:-info}
     entrypoint: ["/usr/local/bin/mcp-v8"]
     command:
@@ -77,17 +75,15 @@ services:
       - "--policies-json"
       - "/app/policies/policies.json"
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/mcp"]
+      # /mcp rejects a plain GET (needs POST), so -f would fail on a healthy
+      # server; accept any HTTP response (a reply means it's listening).
+      test: ["CMD", "curl", "-s", "-o", "/dev/null", "http://127.0.0.1:8080/mcp"]
       interval: 5s
       timeout: 3s
       retries: 20
 
   codex:
-    build:
-      context: .
-      args:
-        MCPJS_REF: claude/stdio-cluster-learner
-    image: nanocodex:cluster
+    image: ghcr.io/r33drichards/nanocodex:d09737542e45304e0e6a303a9bde7046d81963f4
     depends_on:
       leader:
         condition: service_healthy
