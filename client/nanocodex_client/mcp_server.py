@@ -95,8 +95,8 @@ async def send(
         await nc.resume_thread(thread_id, sandbox=_sandbox(sandbox))
         result = await nc.run_turn(thread_id, prompt, timeout=timeout)
         tool_calls = [
-            {"tool": f"{i.get('invocation', {}).get('server')}.{i.get('invocation', {}).get('tool')}",
-             "status": i.get("status")}
+            {"tool": f"{i.get('server')}.{i.get('tool')}", "status": i.get("status"),
+             "error": (i.get("error") or {}).get("message")}
             for i in result["items"] if i.get("type") == "mcpToolCall"
         ]
         return {

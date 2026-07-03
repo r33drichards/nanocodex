@@ -16,6 +16,10 @@ import websockets
 
 from nanocodex_client.core import Nanocodex, RpcError, SandboxSpec, thread_transcript
 
+
+def _adjacent(args, a, b):
+    return any(args[i] == a and args[i + 1] == b for i in range(len(args) - 1))
+
 THREAD = {
     "id": "t-1", "sessionId": "s-1", "forkedFromId": None, "parentThreadId": None,
     "preview": "hi", "ephemeral": False, "modelProvider": "azure", "createdAt": 0,
@@ -130,7 +134,9 @@ class SandboxSpecTest(unittest.TestCase):
     def test_default_uses_baked_policies_path(self):
         cfg = SandboxSpec().to_config()["mcp_servers"]["js"]
         self.assertEqual(cfg["command"], "/usr/local/bin/mcp-v8")
-        self.assertEqual(cfg["args"], ["--policies-json", "/app/policies/policies.json"])
+        self.assertEqual(cfg["args"][:2], ["--policies-json", "/app/policies/policies.json"])
+        self.assertIn("--session-db-path", cfg["args"])
+        self.assertEqual(cfg["default_tools_approval_mode"], "approve")
         self.assertNotIn("env", cfg)
 
     def test_inline_policies_passed_as_json_arg(self):
@@ -151,7 +157,8 @@ class SandboxSpecTest(unittest.TestCase):
         # writes the file, then execs mcp-v8 with the resolved args as "$@"
         self.assertIn("> /tmp/nanocodex/fetch.rego", script)
         self.assertTrue(script.rstrip().endswith('exec /usr/local/bin/mcp-v8 "$@"'))
-        self.assertEqual(cfg["args"][2:], ["mcp-v8", "--policies-json", "/tmp/nanocodex/policies.json"])
+        self.assertEqual(cfg["args"][2:5], ["mcp-v8", "--policies-json", "/tmp/nanocodex/policies.json"])
+        self.assertIn("--session-db-path", cfg["args"])
         # content travels through env, not argv
         self.assertEqual(cfg["env"]["NANOCODEX_FILE_0"], "package mcp.fetch\ndefault allow = false\n")
 
@@ -163,7 +170,7 @@ class SandboxSpecTest(unittest.TestCase):
         cfg = spec.to_config()["mcp_servers"]["js"]
         self.assertEqual(cfg["command"], "/bin/sh")
         self.assertIn("mcp-v8", cfg["args"])
-        self.assertEqual(cfg["args"][-2:], ["--policies-json", "/tmp/t/p.json"])
+        self.assertTrue(_adjacent(cfg["args"], "--policies-json", "/tmp/t/p.json"))
 
     def test_config_written_as_toml_and_passed_via_flag(self):
         import tomllib
@@ -174,7 +181,7 @@ class SandboxSpecTest(unittest.TestCase):
         spec = SandboxSpec(config=cfg, bearer=[("b.com", "tok")])
         js = spec.to_config()["mcp_servers"]["js"]
         self.assertEqual(js["command"], "/bin/sh")
-        self.assertEqual(js["args"][-2:], ["--config", "/tmp/nanocodex/config.toml"])
+        self.assertTrue(_adjacent(js["args"], "--config", "/tmp/nanocodex/config.toml"))
         # the written config is valid TOML with the bearer folded into fetch_headers
         written = js["env"]["NANOCODEX_FILE_0"]
         parsed = tomllib.loads(written)
@@ -185,7 +192,7 @@ class SandboxSpecTest(unittest.TestCase):
     def test_config_json_format(self):
         spec = SandboxSpec(config={"http_port": 8080}, config_format="json")
         js = spec.to_config()["mcp_servers"]["js"]
-        self.assertEqual(js["args"][-2:], ["--config", "/tmp/nanocodex/config.json"])
+        self.assertTrue(_adjacent(js["args"], "--config", "/tmp/nanocodex/config.json"))
         self.assertEqual(json.loads(js["env"]["NANOCODEX_FILE_0"]), {"http_port": 8080})
 
     def test_raw_is_verbatim(self):

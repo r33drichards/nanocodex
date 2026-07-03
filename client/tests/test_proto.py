@@ -27,6 +27,10 @@ from nanocodex_client.proto.nanocodex.v1 import SandboxSpec as PbSandbox
 from nanocodex_client.proto_adapt import mcpv8_config_to_dict, sandbox_spec_from_proto
 
 
+def _adjacent(args, a, b):
+    return any(args[i] == a and args[i + 1] == b for i in range(len(args) - 1))
+
+
 class McpV8ConfigAdapterTest(unittest.TestCase):
     def test_static_header_is_flattened(self):
         cfg = McpV8Config(fetch_headers=[
@@ -70,19 +74,19 @@ class SandboxSpecAdapterTest(unittest.TestCase):
             FetchHeaderRule(host="a.com", headers=StaticHeaders(headers={"Authorization": "Bearer x"}))])
         pb = PbSandbox(config=cfg, config_format=ConfigFormat.TOML, bearer=[Bearer(host="b.com", token="tk")])
         js = sandbox_spec_from_proto(pb).to_config()["mcp_servers"]["js"]
-        self.assertEqual(js["args"][-2:], ["--config", "/tmp/nanocodex/config.toml"])
+        self.assertTrue(_adjacent(js["args"], "--config", "/tmp/nanocodex/config.toml"))
         parsed = tomllib.loads(js["env"]["NANOCODEX_FILE_0"])
         self.assertEqual({h["host"] for h in parsed["fetch_headers"]}, {"a.com", "b.com"})
 
     def test_empty_proto_is_default_spec(self):
         js = sandbox_spec_from_proto(PbSandbox()).to_config()["mcp_servers"]["js"]
         self.assertEqual(js["command"], "/usr/local/bin/mcp-v8")
-        self.assertEqual(js["args"], ["--policies-json", "/app/policies/policies.json"])
+        self.assertEqual(js["args"][:2], ["--policies-json", "/app/policies/policies.json"])
 
     def test_config_format_json(self):
         pb = PbSandbox(config=McpV8Config(http_port=1), config_format=ConfigFormat.JSON)
         js = sandbox_spec_from_proto(pb).to_config()["mcp_servers"]["js"]
-        self.assertEqual(js["args"][-2:], ["--config", "/tmp/nanocodex/config.json"])
+        self.assertTrue(_adjacent(js["args"], "--config", "/tmp/nanocodex/config.json"))
         self.assertEqual(json.loads(js["env"]["NANOCODEX_FILE_0"]), {"http_port": 1})
 
 

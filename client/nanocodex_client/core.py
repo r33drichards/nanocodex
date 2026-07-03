@@ -84,6 +84,14 @@ class SandboxSpec:
 
     config: Optional[dict] = None
     config_format: str = "toml"
+    # codex mcp tool approval mode for the sandbox: auto | prompt | approve.
+    # Default "approve" so the trusted sandbox runs without an approval prompt.
+    tools_approval: str = "approve"
+    # Per-thread mcp-v8 session/sled directory. Each thread spawns its own
+    # mcp-v8 process; they must NOT share the default /tmp/mcp-v8-sessions or
+    # sled's exclusive lock makes all-but-one fail ("Execution registry not
+    # configured"). None => a unique dir per SandboxSpec instance.
+    session_dir: Optional[str] = None
     raw: Optional[dict] = None
     args: Optional[list[str]] = None
     env: dict[str, str] = field(default_factory=dict)
@@ -92,6 +100,12 @@ class SandboxSpec:
     bearer: list[tuple[str, str]] = field(default_factory=list)
     oauth_rules: list[str] = field(default_factory=list)
     extra_args: list[str] = field(default_factory=list)
+
+    def __post_init__(self):
+        if self.session_dir is None:
+            import uuid
+
+            self.session_dir = f"{DEFAULT_POLICY_DIR}/sessions/{uuid.uuid4().hex}"
 
     @classmethod
     def with_policy_files(cls, files: dict[str, str], policies_path: str, **kw) -> "SandboxSpec":
@@ -124,7 +138,10 @@ class SandboxSpec:
     def _mcp_args(self) -> list[str]:
         if self.config is not None:
             path, _ = self._config_file()
-            return ["--config", path, *self.extra_args]
+            # --session-db-path (CLI) coexists with --config and takes
+            # precedence, so a unique per-thread dir is guaranteed.
+            args = ["--config", path, *self.extra_args]
+            return self._with_session_dir(args)
         if self.args is not None:
             args = list(self.args)
         elif self.policies is not None:
@@ -138,7 +155,14 @@ class SandboxSpec:
         for rule in self.oauth_rules:
             args += ["--fetch-header", rule]
         args += self.extra_args
-        return args
+        return self._with_session_dir(args)
+
+    def _with_session_dir(self, args: list[str]) -> list[str]:
+        """Append a unique --session-db-path unless the caller set one, so each
+        per-thread mcp-v8 gets its own sled store (no exclusive-lock collision)."""
+        if "--session-db-path" in args:
+            return args
+        return [*args, "--session-db-path", self.session_dir]
 
     def to_config(self) -> dict:
         if self.raw is not None:
@@ -175,6 +199,11 @@ class SandboxSpec:
             "args": argv,
             "startup_timeout_sec": 30,
             "tool_timeout_sec": 180,
+            # The sandbox is the model's only tool and is trusted by design, so
+            # auto-approve its calls (codex's default "auto" still elicits an
+            # approval per call). Without this, tool calls are rejected unless
+            # the client answers the approval elicitation.
+            "default_tools_approval_mode": self.tools_approval,
         }
         if env:
             server["env"] = env
@@ -310,13 +339,14 @@ class Nanocodex:
                     if fut and not fut.done():
                         fut.set_result(msg)
                 elif "id" in msg and "method" in msg:
-                    # Server → client request (approvals etc). Nothing we host
-                    # needs approvals (exec/fs tools are disabled), so refuse
-                    # instead of hanging the turn.
-                    await self.ws.send(json.dumps({
-                        "id": msg["id"],
-                        "error": {"code": -32601, "message": "nanocodex client refuses server requests"},
-                    }))
+                    # Server → client request. Approve MCP tool-call approval
+                    # elicitations (the sandbox is the model's only, trusted
+                    # tool) so tool calls aren't rejected; refuse anything else,
+                    # since exec/fs tools are disabled and nothing else should
+                    # be asking us. (Belt-and-suspenders: SandboxSpec also sets
+                    # default_tools_approval_mode=approve so this rarely fires.)
+                    reply = self._server_request_reply(msg)
+                    await self.ws.send(json.dumps({"id": msg["id"], **reply}))
                 else:
                     for q in list(self._subscribers):
                         q.put_nowait(msg)
@@ -325,6 +355,21 @@ class Nanocodex:
         finally:
             for q in list(self._subscribers):
                 q.put_nowait(None)  # sentinel: connection gone
+
+    @staticmethod
+    def _server_request_reply(msg: dict) -> dict:
+        """Decide how to answer a server → client request. Approve MCP tool-call
+        approval elicitations; refuse everything else."""
+        method = msg.get("method", "")
+        meta = (msg.get("params") or {}).get("_meta") or {}
+        is_tool_approval = method == "mcpServer/elicitation/request" and (
+            meta.get("codex_approval_kind") == "mcp_tool_call"
+        )
+        if is_tool_approval:
+            # MCP elicitation accept; scope it to the session so subsequent
+            # calls in the thread don't re-prompt.
+            return {"result": {"action": "accept", "scope": "session"}}
+        return {"error": {"code": -32601, "message": "nanocodex client refuses server requests"}}
 
     async def request(self, method: str, params: dict | None = None) -> Any:
         """Naive passthrough: send any app-server JSON-RPC request."""
@@ -467,10 +512,13 @@ def item_to_text(item: dict, verbose: bool = False) -> str | None:
     if itype == "agentMessage":
         return f"agent: {item.get('text', '')}"
     if itype == "mcpToolCall":
-        inv = item.get("invocation", {})
-        line = f"tool [{item.get('status')}]: {inv.get('server')}.{inv.get('tool')}"
-        if verbose and item.get("output") is not None:
-            line += f" -> {json.dumps(item['output'])[:600]}"
+        # mcpToolCall items carry server/tool/result/error at the top level.
+        line = f"tool [{item.get('status')}]: {item.get('server')}.{item.get('tool')}"
+        err = item.get("error")
+        if err:
+            line += f" — error: {err.get('message', err)}"
+        elif verbose and item.get("result") is not None:
+            line += f" -> {json.dumps(item['result'])[:600]}"
         return line
     if itype == "reasoning":
         return f"reasoning: {item.get('summary', '')}" if verbose else None
