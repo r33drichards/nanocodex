@@ -239,11 +239,12 @@ function Chat() {
   return (
     <div className="chat">
       <CopilotChat
+        imageUploadsEnabled
         labels={{
           title: "nanocodex",
           initial:
-            "Type e.g. RUNJS::console.log(2+2) to run JS via codex/run_js.",
-          placeholder: "RUNJS::console.log(2+2)",
+            "Type e.g. RUNJS::console.log(2+2) to run JS via codex/run_js. You can also paste (⌘V) or attach images.",
+          placeholder: "Type a message, or paste an image…",
         }}
       />
     </div>

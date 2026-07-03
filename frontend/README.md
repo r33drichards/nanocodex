@@ -30,6 +30,17 @@ browser  ──►  /api/copilotkit  ──►  CopilotRuntime + HttpAgent  ─�
   `js.run_js` (returns an `execution_id`) and `js.get_execution_output` polls
   (carry the stdout) — both render as cards, and the poll card shows `4`.
 
+## Image input
+
+`<CopilotChat imageUploadsEnabled />` adds an attach button **and** ⌘V paste
+(CopilotKit's built-in `handlePaste`). Images are sent as AG-UI image content;
+the bridge maps them to codex `Image { url }` (a `data:` URL for pasted bytes,
+or a plain URL passed through) so the model's vision sees them — arbitrarily
+many per message. Tests: `e2e/test_copilotkit_images.py` (deterministic:
+attach + paste produce an attachment preview; set `AGUI_VISION_SMOKE=1` to also
+assert a real vision model identifies the color). Backend mapping is unit-tested
+in `client/tests/test_agui_image_input.py`.
+
 ## Human-in-the-loop (HITL) approvals + steer
 
 A **"require approvals"** toggle in the header opts the thread into HITL. When on,
