@@ -27,14 +27,32 @@ from .mapper import (
     thread_summaries,
     thread_to_agui_messages,
 )
+from .state_store import MemoryStore, StateStore
 from .threads import ThreadStore
 
 router = APIRouter()
-store = ThreadStore()
-# codex thread ids with an in-flight turn (one active turn per thread).
-_active: set[str] = set()
+# ALL cross-turn bridge state (thread bindings, turn locks, run dedup,
+# pending approval records) routes through this store. Swap in a durable
+# StateStore implementation (verified via state_store_conformance) to get
+# restart-safety and multi-instance coordination; the default MemoryStore
+# matches the previous single-process behavior. Message history is NOT
+# here — Codex threads are the durable transcript.
+state: StateStore = MemoryStore()
+store = ThreadStore(state)
 
-# Pending human-in-the-loop approvals: approval_id -> Future[bool].
+# One active turn per thread, enforced with a store-backed lock under
+# `turn:<thread id>`. The TTL bounds how long a crashed bridge can wedge a
+# thread; a live turn that outruns it risks a concurrent turn, so keep it
+# above your longest expected turn.
+TURN_LOCK_TTL_SECS = float(os.environ.get("AGUI_TURN_LOCK_TTL", "600"))
+# Window in which a re-POSTed (threadId, runId) pair is rejected as a
+# duplicate delivery (client/proxy retries).
+RUN_DEDUP_TTL_SECS = float(os.environ.get("AGUI_RUN_DEDUP_TTL", "300"))
+
+# Pending human-in-the-loop approvals: approval_id -> Future[bool] for the
+# instance that owns the paused turn. Each approval is also recorded in
+# `state.kv` under `approval:<id>` so ANY instance sharing the store can
+# accept the decision (delivered back via `approval-decision:<id>` queue).
 _approvals: dict[str, asyncio.Future] = {}
 # How long to wait for a frontend decision before defaulting to DENY.
 APPROVAL_TIMEOUT_SECS = float(os.environ.get("AGUI_APPROVAL_TIMEOUT", "120"))
@@ -60,8 +78,17 @@ def _approval_handler(nc: Nanocodex, thread_id: str):
             return nc._server_request_reply(msg)  # non-approval: default behavior
 
         approval_id = uuid.uuid4().hex
-        fut: asyncio.Future = asyncio.get_event_loop().create_future()
+        loop = asyncio.get_event_loop()
+        fut: asyncio.Future = loop.create_future()
         _approvals[approval_id] = fut
+        # Durable-action record (the port of the Slack bot's action store):
+        # with a shared StateStore backend, an instance that does NOT hold
+        # the future can still validate the id and deliver the decision.
+        await state.kv.set(
+            f"approval:{approval_id}",
+            {"threadId": thread_id, "toolDescription": meta.get("tool_description")},
+            ttl_ms=APPROVAL_TIMEOUT_SECS * 1000,
+        )
         # Surface the approval onto the run's SSE stream (frontend renders it).
         nc.inject_notification(_APPROVAL, {
             "threadId": thread_id,
@@ -71,11 +98,24 @@ def _approval_handler(nc: Nanocodex, thread_id: str):
         })
         approved = False
         try:
-            approved = await asyncio.wait_for(fut, timeout=APPROVAL_TIMEOUT_SECS)
-        except asyncio.TimeoutError:
-            approved = False
+            deadline = loop.time() + APPROVAL_TIMEOUT_SECS
+            while True:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    break  # timeout → deny
+                # asyncio.wait (unlike wait_for) leaves the future intact on
+                # timeout, so a late local set_result still lands next lap.
+                done, _ = await asyncio.wait({fut}, timeout=min(1.0, remaining))
+                if done:
+                    approved = bool(fut.result())
+                    break
+                decision = await state.queue.dequeue(f"approval-decision:{approval_id}")
+                if decision is not None:  # resolved by another instance
+                    approved = bool(decision)
+                    break
         finally:
             _approvals.pop(approval_id, None)
+            await state.kv.delete(f"approval:{approval_id}")
             nc.inject_notification(_APPROVAL_RESOLVED, {
                 "threadId": thread_id, "approvalId": approval_id, "approved": approved,
             })
@@ -192,14 +232,15 @@ def _wants_approvals(inp: RunAgentInput) -> bool:
     return bool(fp.get("approvals", os.environ.get("AGUI_APPROVALS") == "1"))
 
 
-def _codex_id_for(agui_thread_id: str) -> str | None:
+async def _codex_id_for(agui_thread_id: str) -> str | None:
     """Codex thread id for an AG-UI thread id, if we already know one.
 
     Codex is the source of truth for threads: an id that came from the thread
     list (`GET /agui/threads`) IS a codex thread id, so it resolves to itself
-    even across bridge restarts (the in-memory store only remembers this-session
-    bindings for brand-new threads whose local id differs from the codex id)."""
-    b = store.get(agui_thread_id)
+    even with an empty binding store (the store only remembers bindings for
+    brand-new threads whose local id differs from the codex id — durably so,
+    when a durable StateStore backend is configured)."""
+    b = await store.get(agui_thread_id)
     return b.codex_thread_id if b else None
 
 
@@ -216,14 +257,14 @@ async def _resolve_or_create(nc: Nanocodex, agui_thread_id: str, approvals: bool
     Codex persists each thread's mcp-v8 sandbox config (including `--session-id`)
     in its rollout, so a resumed thread reuses its original sandbox heap without
     us re-deriving anything."""
-    known = _codex_id_for(agui_thread_id)
+    known = await _codex_id_for(agui_thread_id)
     if known:
         await nc.resume_thread(known)
         return known
     try:
         await nc.resume_thread(agui_thread_id)
-        # It was a real codex thread id; remember the identity for this session.
-        store.bind(agui_thread_id, agui_thread_id, ThreadStore.new_session_id())
+        # It was a real codex thread id; remember the identity.
+        await store.bind(agui_thread_id, agui_thread_id, ThreadStore.new_session_id())
         return agui_thread_id
     except RpcError:
         pass
@@ -233,7 +274,7 @@ async def _resolve_or_create(nc: Nanocodex, agui_thread_id: str, approvals: bool
         developer_instructions=NANOCODEX_INSTRUCTIONS,
     )
     codex_tid = resp["thread"]["id"]
-    store.bind(agui_thread_id, codex_tid, sid)
+    await store.bind(agui_thread_id, codex_tid, sid)
     return codex_tid
 
 
@@ -245,29 +286,52 @@ async def agui(request: Request):
     if not user_input:
         raise HTTPException(status_code=400, detail="no new user message in RunAgentInput")
 
-    # Reject a second concurrent turn on a known-busy thread up front.
-    binding = store.get(inp.thread_id)
-    if binding and binding.codex_thread_id in _active:
+    # Turn lock: at most one agent run per thread at a time (the CopilotKit
+    # bot's `turn:<conversationKey>` lock; a conflict = its onLockConflict
+    # "drop"). Keyed by the codex id when the binding is already known,
+    # otherwise by the AG-UI id — any concurrent POST for the same thread
+    # contends on the same key either way.
+    lock_ttl_ms = TURN_LOCK_TTL_SECS * 1000
+    lock_key = f"turn:{await _codex_id_for(inp.thread_id) or inp.thread_id}"
+    lock_token = await state.lock.acquire(lock_key, ttl_ms=lock_ttl_ms)
+    if lock_token is None:
         raise HTTPException(status_code=409, detail="thread has an active turn (use steer)")
 
+    # Dedup AFTER acquiring the lock: a run rejected on lock-conflict must
+    # NOT burn its run id, so the client's retry can still be processed once
+    # the lock frees.
+    if await state.dedup.seen(
+        f"run:{inp.thread_id}:{inp.run_id}", RUN_DEDUP_TTL_SECS * 1000
+    ):
+        await state.lock.release(lock_key, lock_token)
+        raise HTTPException(status_code=409, detail="duplicate run (already delivered)")
+
     encoder = EventEncoder(accept=request.headers.get("accept"))
-    state = RunState(thread_id=inp.thread_id, run_id=inp.run_id)
+    run_state = RunState(thread_id=inp.thread_id, run_id=inp.run_id)
 
     approvals = _wants_approvals(inp)
 
     async def stream():
         nc = None
-        codex_tid = None
+        held = [(lock_key, lock_token)]
         try:
             nc = await Nanocodex.connect()
             codex_tid = await _resolve_or_create(nc, inp.thread_id, approvals)
+
+            # A fresh client id was locked under the AG-UI id; now that the
+            # codex id is known, contend on it too so a request addressing
+            # the same thread by its codex id can't run concurrently.
+            if f"turn:{codex_tid}" != lock_key:
+                t2 = await state.lock.acquire(f"turn:{codex_tid}", ttl_ms=lock_ttl_ms)
+                if t2 is None:
+                    raise RuntimeError("thread has an active turn (use steer)")
+                held.append((f"turn:{codex_tid}", t2))
 
             # HITL: intercept Codex approval elicitations and route them to the
             # frontend over this stream (instead of auto-approving).
             nc.on_server_request = _approval_handler(nc, codex_tid)
 
-            _active.add(codex_tid)
-            for e in run_started(state):
+            for e in run_started(run_state):
                 yield encoder.encode(e)
 
             notif = nc.notifications(codex_tid)
@@ -285,16 +349,16 @@ async def agui(request: Request):
                         "approvalId": params["approvalId"], "approved": params["approved"],
                     }))
                     continue
-                for e in map_notification(method, params, state):
+                for e in map_notification(method, params, run_state):
                     yield encoder.encode(e)
                 if method == "turn/completed" and params.get("turn", {}).get("id") == turn_id:
                     break
         except Exception as ex:  # never a silent stream close — always RUN_ERROR
-            for e in run_error(state, f"{type(ex).__name__}: {ex}"):
+            for e in run_error(run_state, f"{type(ex).__name__}: {ex}"):
                 yield encoder.encode(e)
         finally:
-            if codex_tid:
-                _active.discard(codex_tid)
+            for key, token in held:
+                await state.lock.release(key, token)
             if nc:
                 await nc.close()
 
@@ -318,7 +382,7 @@ async def thread_history(agui_thread_id: str):
     """Load a thread's transcript as AG-UI wire messages (what the frontend
     feeds `fromAgUiMessages`). The id is a codex thread id (from the list) or a
     this-session local id we can resolve."""
-    codex_tid = _codex_id_for(agui_thread_id) or agui_thread_id
+    codex_tid = await _codex_id_for(agui_thread_id) or agui_thread_id
     nc = await Nanocodex.connect()
     try:
         thread = await nc.read_thread(codex_tid)
@@ -331,7 +395,7 @@ async def thread_history(agui_thread_id: str):
 
 @router.get("/agui/threads/{agui_thread_id}")
 async def get_thread(agui_thread_id: str):
-    b = store.get(agui_thread_id)
+    b = await store.get(agui_thread_id)
     if not b:
         raise HTTPException(status_code=404, detail="unknown thread")
     return {"aguiThreadId": agui_thread_id, "codexThreadId": b.codex_thread_id}
@@ -340,7 +404,7 @@ async def get_thread(agui_thread_id: str):
 @router.post("/agui/threads/{agui_thread_id}/steer")
 async def steer(agui_thread_id: str, request: Request):
     """Side-channel: inject input into the thread's in-flight turn."""
-    b = store.get(agui_thread_id)
+    b = await store.get(agui_thread_id)
     if not b:
         raise HTTPException(status_code=404, detail="unknown thread")
     body = await request.json()
@@ -358,11 +422,19 @@ async def steer(agui_thread_id: str, request: Request):
 @router.post("/agui/approvals/{approval_id}")
 async def resolve_approval(approval_id: str, request: Request):
     """Side-channel: answer a pending HITL approval surfaced on a run stream.
-    Body: {"approve": true|false}. Unblocks the paused Codex turn."""
-    fut = _approvals.get(approval_id)
-    if fut is None or fut.done():
-        raise HTTPException(status_code=404, detail="unknown or already-resolved approval")
+    Body: {"approve": true|false}. Unblocks the paused Codex turn — directly
+    when this instance owns it, or via the shared store's decision queue when
+    another instance does (multi-instance deployments behind one balancer)."""
     body = await request.json()
     approved = bool(body.get("approve", body.get("approved", False)))
-    fut.set_result(approved)
+    fut = _approvals.get(approval_id)
+    if fut is not None and not fut.done():
+        fut.set_result(approved)
+        return {"approvalId": approval_id, "approved": approved}
+    # Not ours (or already settled locally): valid only if the pending-approval
+    # record is still in the shared store; the owning instance's wait loop
+    # picks the decision up from the queue.
+    if await state.kv.get(f"approval:{approval_id}") is None:
+        raise HTTPException(status_code=404, detail="unknown or already-resolved approval")
+    await state.queue.enqueue(f"approval-decision:{approval_id}", approved)
     return {"approvalId": approval_id, "approved": approved}

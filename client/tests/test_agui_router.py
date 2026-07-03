@@ -2,14 +2,17 @@
 endpoints. `Nanocodex` is faked so these stay deterministic (no ws, no model).
 
 They guard the resolve-or-create contract (an id from `thread/list` resumes to
-itself; an unknown id creates + binds) and the two read endpoints.
+itself; an unknown id creates + binds), the two read endpoints, and the
+StateStore-backed turn lock + run dedup on `POST /agui`.
 """
 
+import asyncio
 import unittest
 
 from fastapi.testclient import TestClient
 
 import nanocodex_client.agui.router as R
+from nanocodex_client.agui.state_store import MemoryStore
 from nanocodex_client.core import RpcError
 
 
@@ -52,6 +55,14 @@ class FakeNC:
             {"type": "agentMessage", "id": "a1", "text": "Hi"},
         ]}]}
 
+    async def start_turn(self, thread_id, input=None):
+        return {"id": "turn-1"}
+
+    def notifications(self, thread_id):
+        async def gen():
+            yield ("turn/completed", {"turn": {"id": "turn-1"}})
+        return gen()
+
     async def close(self):
         pass
 
@@ -60,7 +71,10 @@ class RouterTest(unittest.TestCase):
     def setUp(self):
         FakeNC.existing = {"codex-a", "codex-b"}
         FakeNC.created, FakeNC.resumed, FakeNC.read_calls = [], [], []
-        R.store = R.ThreadStore()  # fresh in-memory bindings per test
+        # Fresh StateStore per test: bindings, turn locks, and run dedup all
+        # hang off it.
+        R.state = MemoryStore()
+        R.store = R.ThreadStore(R.state)
 
         async def _connect(*a, **k):
             return FakeNC()
@@ -90,21 +104,84 @@ class RouterTest(unittest.TestCase):
         self.assertEqual(r.status_code, 404)
 
     def test_resolve_existing_codex_id_resumes_no_create(self):
-        import asyncio
         nc = FakeNC()
         tid = asyncio.run(R._resolve_or_create(nc, "codex-a", approvals=False))
         self.assertEqual(tid, "codex-a")
         self.assertEqual(FakeNC.created, [])           # resumed, not created
         self.assertIn("codex-a", FakeNC.resumed)
-        # identity is now bound for this session
-        self.assertEqual(R._codex_id_for("codex-a"), "codex-a")
+        # identity is now bound in the store
+        self.assertEqual(asyncio.run(R._codex_id_for("codex-a")), "codex-a")
 
     def test_resolve_unknown_id_creates_and_binds(self):
-        import asyncio
         nc = FakeNC()
         tid = asyncio.run(R._resolve_or_create(nc, "local-xyz", approvals=False))
         self.assertEqual(FakeNC.created, [tid])        # a new codex thread
-        self.assertEqual(R._codex_id_for("local-xyz"), tid)  # local id -> codex id
+        self.assertEqual(asyncio.run(R._codex_id_for("local-xyz")), tid)  # local id -> codex id
+
+    # --- POST /agui: StateStore-backed turn lock + run dedup -------------
+
+    @staticmethod
+    def _run_body(thread_id: str, run_id: str) -> dict:
+        return {
+            "threadId": thread_id,
+            "runId": run_id,
+            "state": {},
+            "messages": [{"id": "m1", "role": "user", "content": "hi"}],
+            "tools": [],
+            "context": [],
+            "forwardedProps": {},
+        }
+
+    def test_run_completes_and_releases_turn_lock(self):
+        r1 = self.client.post("/agui", json=self._run_body("codex-a", "r1"))
+        self.assertEqual(r1.status_code, 200)
+        self.assertIn("RUN_FINISHED", r1.text)
+        # lock released → a second run on the same thread is accepted
+        r2 = self.client.post("/agui", json=self._run_body("codex-a", "r2"))
+        self.assertEqual(r2.status_code, 200)
+
+    def test_concurrent_turn_conflicts_409(self):
+        # simulate an in-flight turn holding the store-backed lock
+        token = asyncio.run(R.state.lock.acquire("turn:codex-a", ttl_ms=60_000))
+        self.assertIsNotNone(token)
+        r = self.client.post("/agui", json=self._run_body("codex-a", "r1"))
+        self.assertEqual(r.status_code, 409)
+        self.assertIn("active turn", r.json()["detail"])
+        # ...and the conflict must NOT have burned the run id: after the
+        # lock frees, the retry of the SAME run is processed.
+        asyncio.run(R.state.lock.release("turn:codex-a", token))
+        r = self.client.post("/agui", json=self._run_body("codex-a", "r1"))
+        self.assertEqual(r.status_code, 200)
+
+    def test_duplicate_run_id_409(self):
+        r1 = self.client.post("/agui", json=self._run_body("codex-a", "r1"))
+        self.assertEqual(r1.status_code, 200)
+        dup = self.client.post("/agui", json=self._run_body("codex-a", "r1"))
+        self.assertEqual(dup.status_code, 409)
+        self.assertIn("duplicate run", dup.json()["detail"])
+
+    def test_fresh_thread_run_locks_codex_id_too(self):
+        # A brand-new client id creates codex-new-1 and must also contend on
+        # the codex id, so a caller addressing the thread by EITHER id is
+        # serialized. After completion both locks are free.
+        r = self.client.post("/agui", json=self._run_body("local-xyz", "r1"))
+        self.assertEqual(r.status_code, 200)
+        codex_tid = asyncio.run(R._codex_id_for("local-xyz"))
+        for key in (f"turn:{codex_tid}", "turn:local-xyz"):
+            token = asyncio.run(R.state.lock.acquire(key))
+            self.assertIsNotNone(token, f"{key} not released after run")
+            asyncio.run(R.state.lock.release(key, token))
+
+    def test_cross_instance_approval_resolution_via_store(self):
+        # An approval owned by ANOTHER instance: no local future, but the
+        # record exists in the (shared) store → decision goes on the queue.
+        asyncio.run(R.state.kv.set("approval:abc", {"threadId": "codex-a"}, ttl_ms=60_000))
+        r = self.client.post("/agui/approvals/abc", json={"approve": True})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(asyncio.run(R.state.queue.dequeue("approval-decision:abc")), True)
+        # unknown id (no record anywhere) still 404s
+        r = self.client.post("/agui/approvals/nope", json={"approve": True})
+        self.assertEqual(r.status_code, 404)
 
 
 def _app():
