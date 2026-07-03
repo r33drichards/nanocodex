@@ -125,6 +125,8 @@ sandbox_mode = "read-only"
 shell_tool = false        # no shell / unified exec
 apply_patch_tool = false  # no file edits (fork addition)
 view_image_tool = false   # no local file reads (fork addition)
+memories = false          # no memory extraction / consolidation
+chronicle = false         # no passive screen-context memory sidecar
 ```
 
 With those features off, the model's tool list contains only `update_plan`

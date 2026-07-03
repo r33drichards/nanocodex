@@ -27,3 +27,5 @@ stream_max_retries = 0
 shell_tool = false
 apply_patch_tool = false
 view_image_tool = false
+memories = false
+chronicle = false

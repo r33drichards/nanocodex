@@ -32,3 +32,7 @@ shell_tool = false
 # Fork additions: strip the remaining fs-touching built-in tools.
 apply_patch_tool = false
 view_image_tool = false
+# No memory: disable startup memory extraction / file-backed consolidation
+# and the passive screen-context memory sidecar.
+memories = false
+chronicle = false
