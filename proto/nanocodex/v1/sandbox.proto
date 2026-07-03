@@ -1,0 +1,47 @@
+syntax = "proto3";
+
+// Per-thread mcp-v8 sandbox specification — the canonical form of what the
+// client translates into a codex `mcp_servers.js` config for one thread.
+// Mirrors nanocodex_client.core.SandboxSpec: a naive passthrough with
+// conveniences layered on top.
+package nanocodex.v1;
+
+import "google/protobuf/struct.proto";
+import "nanocodex/v1/mcpv8.proto";
+
+enum ConfigFormat {
+  CONFIG_FORMAT_UNSPECIFIED = 0;      // treated as TOML
+  CONFIG_FORMAT_TOML = 1;
+  CONFIG_FORMAT_JSON = 2;
+}
+
+message SandboxSpec {
+  // Preferred: one mcp-v8 config document. Written to the container fs and
+  // passed as `--config <path>`. When set, owns the mcp-v8 configuration.
+  optional McpV8Config config = 1;
+  ConfigFormat config_format = 2;     // on-disk format for `config`
+
+  // Escape hatch: entire `mcp_servers.js` value, used verbatim (ignores all
+  // other fields). google.protobuf.Struct = arbitrary JSON object.
+  google.protobuf.Struct raw = 3;
+
+  // Raw mcp-v8 argv; empty => a sensible default (--policies-json).
+  repeated string args = 4;
+  // Extra environment for the mcp-v8 process.
+  map<string, string> env = 5;
+  // {container_path: content} written to the container fs BEFORE mcp-v8 starts
+  // (via an `sh -c` wrapper). The mechanism for shipping custom rego.
+  map<string, string> files = 6;
+
+  // Conveniences (used only when `config`/`raw`/`args` are unset, except
+  // `bearer`, which also folds into a `config`'s fetch_headers).
+  optional McpV8Config policies_inline = 7;  // policies passed inline via --policies-json
+  repeated Bearer bearer = 8;                 // static Authorization bearers, host-scoped
+  repeated string oauth_rules = 9;            // raw mcp-v8 --fetch-header oauth rules
+  repeated string extra_args = 10;
+}
+
+message Bearer {
+  string host = 1;
+  string token = 2;
+}

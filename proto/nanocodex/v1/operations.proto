@@ -1,0 +1,120 @@
+syntax = "proto3";
+
+// The nanocodex operation surface: the requests we author and the synthesized
+// results we return. Codex's own thread/turn/item/notification payloads are
+// NOT re-modeled here — they cross the boundary as google.protobuf.Struct
+// (arbitrary JSON), keeping codex's ts-rs types their source of truth.
+package nanocodex.v1;
+
+import "google/protobuf/struct.proto";
+import "nanocodex/v1/sandbox.proto";
+
+// ── requests ─────────────────────────────────────────────────────────────
+
+message CreateThreadRequest {
+  optional string model = 1;
+  SandboxSpec sandbox = 2;
+  string cwd = 3;                     // default "/tmp"
+}
+
+message CreateThreadResponse {
+  string thread_id = 1;
+  string model = 2;
+  string model_provider = 3;
+}
+
+message StartTurnRequest {
+  string thread_id = 1;
+  string prompt = 2;
+  double timeout_secs = 3;            // default 600
+  SandboxSpec sandbox = 4;            // applied on resume if thread not running
+}
+
+message SteerRequest {
+  string thread_id = 1;
+  string prompt = 2;
+}
+
+message MessagesRequest {
+  string thread_id = 1;
+  bool verbose = 2;
+}
+
+message ListThreadsRequest {
+  uint32 limit = 1;                   // default 25
+  optional string cursor = 2;
+}
+
+message RpcRequest {
+  string method = 1;                  // any app-server JSON-RPC method
+  google.protobuf.Struct params = 2;
+}
+
+message RpcResponse {
+  google.protobuf.Struct result = 1;
+}
+
+// ── synthesized results ──────────────────────────────────────────────────
+
+enum TurnStatus {
+  TURN_STATUS_UNSPECIFIED = 0;
+  TURN_STATUS_COMPLETED = 1;
+  TURN_STATUS_INTERRUPTED = 2;
+  TURN_STATUS_FAILED = 3;
+  TURN_STATUS_IN_PROGRESS = 4;
+}
+
+message ToolCall {
+  string tool = 1;                    // "<server>.<tool>"
+  string status = 2;
+  google.protobuf.Struct output = 3;
+}
+
+// Result of run_turn: the turn outcome plus what we collected while streaming.
+message TurnResult {
+  TurnStatus status = 1;
+  repeated string agent_messages = 2;
+  repeated ToolCall tool_calls = 3;
+  // The raw codex Turn payload, passed through untyped.
+  google.protobuf.Struct turn = 4;
+}
+
+// One line of a rendered transcript item.
+message TranscriptItem {
+  string kind = 1;                    // userMessage | agentMessage | mcpToolCall | ...
+  string text = 2;                    // rendered one-line form
+  google.protobuf.Struct item = 3;    // raw codex ThreadItem
+}
+
+message TranscriptTurn {
+  string turn_id = 1;
+  string status = 2;
+  repeated TranscriptItem items = 3;
+}
+
+message Transcript {
+  string thread_id = 1;
+  repeated TranscriptTurn turns = 2;
+}
+
+message ThreadSummary {
+  string thread_id = 1;
+  string status = 2;
+  string preview = 3;
+}
+
+message ListThreadsResponse {
+  repeated ThreadSummary threads = 1;
+}
+
+// Optional gRPC surface mirroring the FastAPI bridge / FastMCP tools. Generated
+// stubs are unused unless a gRPC transport is wired; the messages above are the
+// primary deliverable.
+service NanocodexService {
+  rpc CreateThread(CreateThreadRequest) returns (CreateThreadResponse);
+  rpc StartTurn(StartTurnRequest) returns (TurnResult);
+  rpc Steer(SteerRequest) returns (google.protobuf.Struct);
+  rpc Messages(MessagesRequest) returns (Transcript);
+  rpc ListThreads(ListThreadsRequest) returns (ListThreadsResponse);
+  rpc Rpc(RpcRequest) returns (RpcResponse);
+}

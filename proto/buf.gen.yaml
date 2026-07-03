@@ -1,0 +1,21 @@
+version: v2
+clean: true
+plugins:
+  # Python: betterproto — clean dataclasses with native JSON (to_dict/from_dict,
+  # snake_case option). Output lands inside the client package so it imports as
+  # nanocodex_client.proto.*. Requires the local plugin on PATH
+  # (protoc-gen-python_betterproto from `betterproto[compiler]`), so drive this
+  # via `proto/generate.sh` rather than `buf generate` unless the plugin is
+  # installed. buf remote plugins for betterproto are not published as check
+  # plugins, hence the local plugin here.
+  - local: protoc-gen-python_betterproto
+    out: ../client/nanocodex_client/proto
+
+  # Rust (prost) — uncomment to also generate Rust types for a future
+  # in-process/gRPC service. Kept off by default to avoid unused output.
+  # - remote: buf.build/community/neoeinstein-prost:v0.4.1
+  #   out: ../gen/rust
+
+  # TypeScript (protobuf-es) — uncomment for a future web/TS client.
+  # - remote: buf.build/bufbuild/es:v2.2.3
+  #   out: ../gen/ts

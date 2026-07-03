@@ -1,0 +1,114 @@
+syntax = "proto3";
+
+// The mcp-v8 single-file configuration document (mcp-v8 >= 0.18.1 `--config`).
+// This mirrors the TOML/JSON config the sandbox reads: scalar keys mirror flag
+// names, and structured sections (policies / fetch_headers / mcp_servers / wasm)
+// inline what are otherwise separate files. Field JSON names are snake_case to
+// match mcp-v8's key vocabulary.
+package nanocodex.v1;
+
+// Top-level mcp-v8 config. Only a subset of scalar flags is modeled explicitly;
+// everything mcp-v8 accepts is expressible, and unmodeled scalar flags can be
+// carried in `extra` (merged as top-level keys when serialized).
+message McpV8Config {
+  // Structured sections.
+  Policies policies = 1;
+  repeated FetchHeaderRule fetch_headers = 2;
+  repeated McpServer mcp_servers = 3;
+  map<string, WasmModule> wasm = 4;
+
+  // Common scalar flags (snake_case mirrors the CLI; 0/empty means "unset").
+  optional uint32 http_port = 10;
+  optional uint32 sse_port = 11;
+  optional string bind_host = 12;
+  optional uint64 heap_memory_max = 13;
+  optional uint64 execution_timeout = 14;
+  optional uint32 max_concurrent_executions = 15;
+  optional string heap_store = 16;   // none | dir | s3
+  optional string heap_dir = 17;
+  optional string fs_store = 18;
+  optional string fs_dir = 19;
+
+  // Escape hatch for scalar flags not modeled above; merged as top-level keys.
+  map<string, string> extra = 100;
+}
+
+// ── policies ─────────────────────────────────────────────────────────────
+
+// The `policies` object: a per-operation policy chain keyed by operation.
+message Policies {
+  OperationPolicies fetch = 1;
+  OperationPolicies modules = 2;
+  OperationPolicies filesystem = 3;
+  OperationPolicies fs_snapshot = 4;
+  OperationPolicies mcp_tools = 5;
+  OperationPolicies subprocess = 6;
+  OperationPolicies run_js_file = 7;
+}
+
+message OperationPolicies {
+  EvalMode mode = 1;                  // default ALL
+  repeated PolicySource policies = 2;
+}
+
+enum EvalMode {
+  EVAL_MODE_UNSPECIFIED = 0;          // serialized as "all" (mcp-v8 default)
+  EVAL_MODE_ALL = 1;
+  EVAL_MODE_ANY = 2;
+}
+
+message PolicySource {
+  string url = 1;                     // file:// local rego, or http(s):// OPA
+  optional string policy_path = 2;    // remote OPA data path
+  optional string rule = 3;           // local regorus eval rule
+}
+
+// ── fetch header injection ───────────────────────────────────────────────
+
+// One fetch header rule: exactly one of `headers` (static) or `auth` (OAuth
+// client-credentials) is set.
+message FetchHeaderRule {
+  string host = 1;                    // exact or leading-wildcard (*.example.com)
+  repeated string methods = 2;        // empty = all methods
+  oneof injection {
+    StaticHeaders headers = 3;
+    OAuthClientCredentials auth = 4;
+  }
+}
+
+message StaticHeaders {
+  map<string, string> headers = 1;
+}
+
+message OAuthClientCredentials {
+  // JSON tag is "oauth_client_credentials"; carried as a constant on the wire.
+  string type = 1;                    // "oauth_client_credentials"
+  string header = 2;                  // header name, e.g. Authorization
+  string token_url = 3;
+  string client_id = 4;
+  string client_secret = 5;
+  optional string scope = 6;
+  optional uint64 refresh_buffer_secs = 7;
+}
+
+// ── composed MCP servers & wasm ──────────────────────────────────────────
+
+message McpServer {
+  string name = 1;
+  oneof transport {
+    StdioTransport stdio = 2;
+    string sse_url = 3;
+  }
+}
+
+message StdioTransport {
+  string command = 1;
+  repeated string args = 2;
+  map<string, string> env = 3;
+}
+
+message WasmModule {
+  string path = 1;
+  optional uint64 max_memory_bytes = 2;
+  optional string description = 3;
+}
