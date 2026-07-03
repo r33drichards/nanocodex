@@ -162,7 +162,7 @@ for that thread only. The core sends:
 URL; header rules decide which hosts get credentials). Tighten it if you want
 an allowlist — see `policies/README.md`.
 
-### Runtime images: default vs `nanocodex-languages`
+### Runtime images: default vs `nanocodex-languages` (deploy-time choice)
 
 The base image stays minimal. A second, optional image —
 **`nanocodex-languages`** (`Dockerfile.languages`) — layers the mcp-js
@@ -172,31 +172,32 @@ markdown, and mermaid helpers (assets in `languages/`, vendored from
 open-agents' `deploy/mcp-js`). CI publishes it as
 `ghcr.io/r33drichards/nanocodex-languages`.
 
-Run it as a second app-server (see the `codex-languages` service in
-`docker-compose.yml`, port 4510) and point the AG-UI bridge at both:
+**One instance runs one image, chosen at deploy time** — want the other
+image, deploy another instance. `docker compose up` runs the base instance;
+the languages instance is behind a compose profile:
 
 ```bash
-NANOCODEX_BACKENDS='[
-  {"name": "default", "url": "ws://127.0.0.1:4500"},
-  {"name": "languages", "url": "ws://127.0.0.1:4510", "languages": true}
-]'
+docker compose --profile languages up -d codex-languages   # :4510
 ```
 
-The bridge then exposes `GET /agui/images` (the frontend's new-thread picker
-renders it; first entry = default) and creates each thread on the backend the
-picker named — `forwardedProps.image` on the first run. Threads on a
-languages backend get a different mcp-v8 preset
-(`client/nanocodex_client/agui/backends.py`): the six `--wasm-module`
-engines, a persistent per-thread `/work` filesystem (`--fs-store dir`,
+The AG-UI bridge's per-thread mcp-v8 args must match the image its instance
+runs, so that is deploy-time config too — set on the bridge pointed at a
+languages instance:
+
+```bash
+NANOCODEX_URL=ws://127.0.0.1:4510 NANOCODEX_SANDBOX=languages
+```
+
+With `NANOCODEX_SANDBOX=languages` every thread gets the languages preset
+(`client/nanocodex_client/agui/sandbox.py`): the six `--wasm-module` engines,
+a persistent per-thread `/work` filesystem (`--fs-store dir`,
 `--fs-passthrough`, policy narrowed by `languages/filesystem.rego`), and **no
 heap persistence** — mcp-v8 rejects `--heap-store` combined with
 `--wasm-module` (heap snapshots run in a SnapshotCreator isolate that
 disables WebAssembly), so cross-call state lives in `/work` instead. In a
 languages thread the model loads the helpers with
-`(0,eval)(await fs.readFile('/opt/languages/bootstrap.js'))`.
-
-When `NANOCODEX_BACKENDS` is unset the bridge uses the single `NANOCODEX_URL`
-backend and everything behaves exactly as before.
+`(0,eval)(await fs.readFile('/opt/languages/bootstrap.js'))`. Unset (or
+`default`), the bridge behaves exactly as before.
 
 ### Naive passthrough & custom per-thread policies
 
@@ -249,7 +250,7 @@ anything shared: `openssl rand -hex 32 > secrets/ws-token`.
 Dockerfile             multi-stage build: codex app-server + mcp-v8 → one runtime image
 Dockerfile.languages   base image + WASM language engines at /opt/languages (nanocodex-languages)
 languages/             engine assets for Dockerfile.languages (vendored wasm + bootstrap generator)
-docker-compose.yml     the test rig (codex + codex-languages)
+docker-compose.yml     the test rig (codex; languages-image instance behind --profile languages)
 codex-home/config.toml global codex config (tool lockdown + API-key model providers)
 policies/              mcp-v8 OPA/rego policy enabling fetch()
 secrets/ws-token       websocket capability token (dev fixture)

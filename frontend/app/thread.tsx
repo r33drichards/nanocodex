@@ -11,8 +11,6 @@ import {
 } from "@assistant-ui/react";
 import { useEffect, useRef, useState, type ClipboardEvent } from "react";
 
-import { ImagePicker, type RuntimeImage } from "./image-picker";
-
 // ── run_js tool card ─────────────────────────────────────────────────────────
 // The bridge forwards the raw MCP result (`{content:[{text:"{...}"}]}`); unwrap
 // it to the meaningful `data` field (stdout / value), falling back sensibly.
@@ -264,17 +262,7 @@ function useRefreshOnIdle(onIdle: () => void) {
   }, [runtime, onIdle]);
 }
 
-export function NanocodexThread({
-  onRunComplete,
-  images,
-  image,
-  onImageChange,
-}: {
-  onRunComplete: () => void;
-  images: RuntimeImage[];
-  image: string;
-  onImageChange: (name: string) => void;
-}) {
+export function NanocodexThread({ onRunComplete }: { onRunComplete: () => void }) {
   useRefreshOnIdle(onRunComplete);
   return (
     <ThreadPrimitive.Root className="thread">
@@ -282,9 +270,6 @@ export function NanocodexThread({
         <ThreadPrimitive.Empty>
           <div className="thread-empty">
             Start a turn. Code runs in the per-thread mcp-v8 sandbox via <code>run_js</code>.
-            {/* The runtime image only applies at thread creation, so the picker
-                lives on the empty (new-thread) screen and disappears with it. */}
-            <ImagePicker images={images} value={image} onChange={onImageChange} />
           </div>
         </ThreadPrimitive.Empty>
         <ThreadPrimitive.Messages

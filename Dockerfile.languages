@@ -1,10 +1,11 @@
 # nanocodex-languages — the base nanocodex runtime image plus the mcp-js
 # "toolbox" WASM language engines (picat, tla+, minizinc, autolisp, lua,
 # craftos) and their bootstrap.js at /opt/languages/. The base image is NOT
-# modified; this is a separate, optional image a deployment runs alongside it
-# (see the codex-languages service in docker-compose.yml). Threads created on
-# this backend get the engines via per-thread --wasm-module flags — see
-# client/nanocodex_client/agui/backends.py.
+# modified; this is a separate image, and which one an instance runs is a
+# deploy-time choice (docker-compose.yml: --profile languages). A bridge
+# pointed at a languages instance runs with NANOCODEX_SANDBOX=languages so
+# threads get the engines via per-thread --wasm-module flags — see
+# client/nanocodex_client/agui/sandbox.py.
 #
 # BASE_IMAGE defaults to the published base; docker-compose overrides it with
 # the locally built one (additional_contexts: service:codex).

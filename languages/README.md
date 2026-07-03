@@ -39,14 +39,16 @@ the `picat`, `tlaplus`, `minizinc`, `autolisp`, `lua`, `craftos`, `jsx`,
 
 ## Runtime wiring
 
-The per-thread mcp-v8 for a "languages" thread is spawned with
+Which image an instance runs is a deploy-time choice; an AG-UI bridge pointed
+at a languages instance is deployed with `NANOCODEX_SANDBOX=languages`. Its
+per-thread mcp-v8 is then spawned with
 `--wasm-module <name>=/opt/languages/<file>.wasm:<cap>` for the six engines,
 `--fs-passthrough` + a dir fs-store (so `fs.readFile('/opt/languages/...')`
 and a persistent `/work` scratch area exist), and
 `--policies-json /opt/languages/policies.json` (allow-all fetch via the base
 image's `/app/policies/fetch.rego`, plus `filesystem.rego` here narrowing fs
 to read-only `/opt/languages` + read-write `/work`). See
-`client/nanocodex_client/agui/backends.py`.
+`client/nanocodex_client/agui/sandbox.py`.
 
 Heap persistence is deliberately OFF for these threads: V8 heap snapshots are
 created in a SnapshotCreator isolate that disables WebAssembly, so mcp-v8
