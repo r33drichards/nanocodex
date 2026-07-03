@@ -28,6 +28,7 @@ from .mapper import (
     thread_to_agui_messages,
 )
 from .threads import ThreadStore
+from .ui_tools import ui_mcp_server
 
 router = APIRouter()
 store = ThreadStore()
@@ -179,7 +180,13 @@ _DEFAULT_INSTRUCTIONS = (
     "calls only if heap persistence is enabled) and at MODULE TOP LEVEL — so a "
     "top-level `return` is a SyntaxError; end with a bare expression or use "
     "`console.log(...)` to produce output. Prefer computing with run_js over doing "
-    "arithmetic or data work by hand; do not attempt a shell or local filesystem."
+    "arithmetic or data work by hand; do not attempt a shell or local filesystem.\n\n"
+    "To show the user a chart, call the `render_plotly` tool with a Plotly figure "
+    "as the arguments: {\"data\": [...traces], \"layout\": {...}}. The chat UI "
+    "renders the figure inline directly from the call arguments (the tool result "
+    "is only an ack), so put literal values in `data` — compute them first with "
+    "run_js if needed. Prefer a render_plotly chart over an ASCII/text chart "
+    "whenever visualizing data."
 )
 
 # Deployment-configurable: set AGUI_INSTRUCTIONS to fully replace the developer
@@ -231,6 +238,9 @@ async def _resolve_or_create(nc: Nanocodex, agui_thread_id: str, approvals: bool
     resp = await nc.create_thread(
         sandbox=_sandbox_for(sid, approvals), cwd="/tmp",
         developer_instructions=NANOCODEX_INSTRUCTIONS,
+        # Generative UI: the `ui` MCP server's render_* tools are no-op acks
+        # whose ARGUMENTS the frontend renders (see agui/ui_tools.py).
+        extra_mcp_servers={"ui": ui_mcp_server("prompt" if approvals else "approve")},
     )
     codex_tid = resp["thread"]["id"]
     store.bind(agui_thread_id, codex_tid, sid)
