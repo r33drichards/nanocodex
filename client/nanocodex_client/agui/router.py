@@ -30,7 +30,12 @@ from .mapper import (
 from .threads import ThreadStore
 
 router = APIRouter()
-store = ThreadStore()
+# In-memory by default (codex is the state store; the web frontend adopts
+# codex ids after its first run). Set AGUI_BINDINGS_PATH (a JSON file on a
+# volume) in deployments serving clients that can't adopt codex ids — e.g.
+# the Slack bot, whose thread ids are derived from Slack conversations — so
+# their conversation → codex-thread bindings survive bridge restarts.
+store = ThreadStore(os.environ.get("AGUI_BINDINGS_PATH"))
 # codex thread ids with an in-flight turn (one active turn per thread).
 _active: set[str] = set()
 

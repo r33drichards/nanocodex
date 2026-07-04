@@ -56,6 +56,25 @@ mapping).
 > `bot-ui@0.0.3`). Bump all three together once a coherent newer train is
 > published; `respondTo` (reply-gating config) becomes available then.
 
+## Deploy
+
+The whole stack (codex + bridge + bot) deploys as one compose project on any
+box with outbound internet — Socket Mode means no public URL, inbound port,
+or TLS anywhere:
+
+```bash
+SLACK_BOT_TOKEN=xoxb-... SLACK_APP_TOKEN=xapp-... \
+  docker compose -f docker-compose.yml -f docker-compose.slack.yml up -d --build
+```
+
+The overlay (repo root: `docker-compose.slack.yml`) adds the bridge and bot
+services and the volumes that make restarts lossless: codex transcripts
+(base compose), mcp-v8 sandbox heaps (`codex-agui-heaps`), and the Slack
+conversation → codex-thread bindings (`bridge-data`, via the bridge's
+`AGUI_BINDINGS_PATH` — Slack conversations can't adopt codex ids the way the
+web frontend does, so this file is their durable link). Run one replica of
+each service; the stack is single-codex by construction.
+
 ## Current limitations (bridge-side, not bot-side)
 
 - **Client tools & context are ignored.** The bridge drops

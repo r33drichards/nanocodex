@@ -13,11 +13,11 @@
     "@ag-ui/client": "0.0.57",
     "@copilotkit/bot": "0.0.3",
     "@copilotkit/bot-slack": "0.0.3",
-    "dotenv": "^16.4.5"
+    "dotenv": "^16.4.5",
+    "tsx": "^4.19.2"
   },
   "devDependencies": {
     "@types/node": "22.10.2",
-    "tsx": "^4.19.2",
     "typescript": "5.7.2"
   }
 }

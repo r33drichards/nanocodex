@@ -31,10 +31,15 @@ must survive a restart already lives in codex (or the mcp-js cluster):
   ARE codex thread ids and resume with zero bridge state.
 - **Sandbox heaps + config** — codex persists each thread's mcp-v8 config
   (incl. `--session-id`); heaps live in the heap store (dir or S3 cluster).
-- **New-chat bootstrap** — a client-generated id is bound in-memory to the
-  codex thread it creates; the client then adopts the codex id via
-  `GET /agui/threads/{id}` after its first run (the frontend does this in
-  `onRunComplete`), so the binding never needs to outlive the process.
+- **New-chat bootstrap** — a client-generated id is bound to the codex
+  thread it creates. Clients that can learn codex ids adopt them via
+  `GET /agui/threads/{id}` after their first run (the web frontend does this
+  in `onRunComplete`), so their bindings never need to outlive the process.
+  Clients that CAN'T adopt (the Slack bot — its ids are derived from Slack
+  conversations) need the binding to survive restarts: set
+  `AGUI_BINDINGS_PATH` to a JSON file on a volume (the
+  `docker-compose.slack.yml` overlay does) and it does. One flat file,
+  rewritten atomically per new conversation — deliberately not a database.
 - **Turn serialization** — one turn per thread, guarded in-process (409 → use
   steer); codex's own turn handling is the backstop.
 - **HITL approvals** — in-process futures tied to the live turn's ws
