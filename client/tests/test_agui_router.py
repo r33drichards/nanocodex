@@ -2,7 +2,10 @@
 endpoints. `Nanocodex` is faked so these stay deterministic (no ws, no model).
 
 They guard the resolve-or-create contract (an id from `thread/list` resumes to
-itself; an unknown id creates + binds) and the two read endpoints.
+itself; an unknown id creates + binds), the two read endpoints, the one-turn-
+per-thread 409, and the codex-id adoption contract (`GET /agui/threads/{id}`
+after a run — what the frontend uses to re-address a new chat by its durable
+codex id).
 """
 
 import unittest
@@ -54,6 +57,14 @@ class FakeNC:
             {"type": "agentMessage", "id": "a1", "text": "Hi"},
         ]}]}
 
+    async def start_turn(self, thread_id, input=None):
+        return {"id": "turn-1"}
+
+    def notifications(self, thread_id):
+        async def gen():
+            yield ("turn/completed", {"turn": {"id": "turn-1"}})
+        return gen()
+
     async def close(self):
         pass
 
@@ -63,6 +74,7 @@ class RouterTest(unittest.TestCase):
         FakeNC.existing = {"codex-a", "codex-b"}
         FakeNC.created, FakeNC.resumed, FakeNC.read_calls = [], [], []
         R.store = R.ThreadStore()  # fresh in-memory bindings per test
+        R._active.clear()
 
         async def _connect(*a, **k):
             return FakeNC()
@@ -109,6 +121,52 @@ class RouterTest(unittest.TestCase):
         self.assertEqual(R._codex_id_for("local-xyz"), tid)  # local id -> codex id
         # new threads get the generative-UI `ui` MCP server next to `js`
         self.assertIn("ui", FakeNC.extra_mcp_servers)
+
+    # --- POST /agui: turn lifecycle -------------------------------------
+
+    @staticmethod
+    def _run_body(thread_id: str, run_id: str) -> dict:
+        return {
+            "threadId": thread_id,
+            "runId": run_id,
+            "state": {},
+            "messages": [{"id": "m1", "role": "user", "content": "hi"}],
+            "tools": [],
+            "context": [],
+            "forwardedProps": {},
+        }
+
+    def test_run_completes_and_frees_the_thread(self):
+        r1 = self.client.post("/agui", json=self._run_body("codex-a", "r1"))
+        self.assertEqual(r1.status_code, 200)
+        self.assertIn("RUN_FINISHED", r1.text)
+        # the in-flight marker is cleared → a follow-up run is accepted
+        r2 = self.client.post("/agui", json=self._run_body("codex-a", "r2"))
+        self.assertEqual(r2.status_code, 200)
+
+    def test_concurrent_turn_conflicts_409(self):
+        # simulate an in-flight turn on a bound thread
+        R.store.bind("codex-a", "codex-a", "s1")
+        R._active.add("codex-a")
+        r = self.client.post("/agui", json=self._run_body("codex-a", "r1"))
+        self.assertEqual(r.status_code, 409)
+        self.assertIn("active turn", r.json()["detail"])
+
+    def test_codex_id_adoption_contract(self):
+        # A brand-new client id runs once; the frontend then resolves the
+        # durable codex id via GET /agui/threads/{local id} and re-addresses
+        # the thread by it (codex is the source of truth; the local binding
+        # is only the bootstrap).
+        r = self.client.post("/agui", json=self._run_body("local-xyz", "r1"))
+        self.assertEqual(r.status_code, 200)
+        g = self.client.get("/agui/threads/local-xyz")
+        self.assertEqual(g.status_code, 200)
+        codex_tid = g.json()["codexThreadId"]
+        self.assertEqual(codex_tid, FakeNC.created[0])
+        # ...and the adopted id resumes the SAME thread — no new create
+        r2 = self.client.post("/agui", json=self._run_body(codex_tid, "r2"))
+        self.assertEqual(r2.status_code, 200)
+        self.assertEqual(len(FakeNC.created), 1)
 
 
 def _app():

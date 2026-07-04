@@ -14,13 +14,41 @@ AG-UI client ──POST /agui (RunAgentInput)──► bridge ──ws JSON-RPC�
 - `mapper.py` — pure `map_notification(method, params, RunState) -> [BaseEvent]`.
   No I/O; the golden tests live here (`client/tests/test_agui_mapper.py`).
 - `threads.py` — AG-UI `threadId` ↔ Codex thread id (+ per-thread mcp-v8
-  session id). In-memory now; swap a durable store later.
+  session id). In-memory by design; see "Persistence" below.
 - `router.py` — `POST /agui` (one turn = one SSE stream), plus
   `POST /agui/threads/{id}/steer` (mid-turn steering side-channel).
 - `app.py` — the FastAPI app; also serves a build-free reference web client
   (`web/index.html`) at `/` for browser testing.
 - See `PHASE0.md` for the pinned `ag-ui-protocol==0.1.19` event surface and the
   full Codex→AG-UI mapping contract.
+
+## Persistence: codex is the state store
+
+The bridge keeps no durable state of its own — deliberately. Everything that
+must survive a restart already lives in codex (or the mcp-js cluster):
+
+- **Transcripts + thread identity** — codex rollouts. Ids from `thread/list`
+  ARE codex thread ids and resume with zero bridge state.
+- **Sandbox heaps + config** — codex persists each thread's mcp-v8 config
+  (incl. `--session-id`); heaps live in the heap store (dir or S3 cluster).
+- **New-chat bootstrap** — a client-generated id is bound to the codex
+  thread it creates. Clients that can learn codex ids adopt them via
+  `GET /agui/threads/{id}` after their first run (the web frontend does this
+  in `onRunComplete`), so their bindings never need to outlive the process.
+  Clients that CAN'T adopt (the Slack bot — its ids are derived from Slack
+  conversations) need the binding to survive restarts: set
+  `AGUI_BINDINGS_PATH` to a JSON file on a volume (the
+  `docker-compose.slack.yml` overlay does) and it does. One flat file,
+  rewritten atomically per new conversation — deliberately not a database.
+- **Turn serialization** — one turn per thread, guarded in-process (409 → use
+  steer); codex's own turn handling is the backstop.
+- **HITL approvals** — in-process futures tied to the live turn's ws
+  connection; an approval cannot outlive the turn it pauses, so there is
+  nothing durable to store.
+
+If a multi-instance bridge behind a non-sticky balancer ever becomes real,
+the pieces that would need shared state are the turn guard and the approval
+decision routing — revisit then, not before.
 
 ## Run locally
 

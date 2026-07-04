@@ -1,0 +1,57 @@
+# Slack app manifest for the nanocodex bot (Socket Mode — no public URL).
+# Create the app at https://api.slack.com/apps → "Create New App" →
+# "From an app manifest", paste this, then install to your workspace.
+# Adapted from CopilotKit's examples/slack manifest, trimmed to what this
+# bot uses (no slash commands, no user token).
+display_information:
+  name: nanocodex
+  description: Sandboxed-compute assistant — chats via codex with a per-thread V8 JavaScript sandbox.
+  background_color: "#1a1a1a"
+features:
+  bot_user:
+    display_name: nanocodex
+    always_online: true
+  # Messages tab on so users can DM the bot.
+  app_home:
+    home_tab_enabled: false
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+  # Assistant pane ("Agents & AI Apps"). Greeting + chips mirror the
+  # `assistant` option in index.ts.
+  assistant_view:
+    assistant_description: Sandboxed-compute assistant backed by codex + a V8 JavaScript sandbox.
+    suggested_prompts:
+      - title: Compute something
+        message: Use run_js to compute the first 20 Fibonacci numbers
+      - title: Fetch and summarize
+        message: Fetch https://example.com and summarize it
+oauth_config:
+  scopes:
+    bot:
+      # --- Read what the user said ---
+      - app_mentions:read # see @mentions of the bot
+      - assistant:write # assistant pane: status, title, suggested prompts
+      - channels:history # rebuild thread history in public channels
+      - groups:history # …private channels
+      - im:history # …DMs
+      - mpim:history # …group DMs
+      - users:read # resolve user ids to names
+      # --- Write replies ---
+      - chat:write # post and edit messages
+      - im:write # open DMs
+      - mpim:write # open group DMs
+      # --- Uploaded files become model-readable content parts ---
+      - files:read
+settings:
+  event_subscriptions:
+    bot_events:
+      - app_mention
+      - assistant_thread_started # user opened the assistant pane
+      - assistant_thread_context_changed # channel/context the user is viewing
+      - message.im # DMs + assistant-pane messages
+      - message.mpim # group DMs the bot is in
+  interactivity:
+    is_enabled: true
+  socket_mode_enabled: true
+  org_deploy_enabled: false
+  token_rotation_enabled: false
