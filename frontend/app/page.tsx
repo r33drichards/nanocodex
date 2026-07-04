@@ -81,6 +81,30 @@ export default function Page() {
     [threads, currentThreadId, agent],
   );
 
+  // Codex-id adoption: a brand-new chat runs under a client-generated id the
+  // bridge binds (in-memory) to a fresh codex thread. After each run, resolve
+  // that binding and re-address the agent by the codex id — the durable
+  // identity. From then on the bridge resumes the thread directly from codex,
+  // so a bridge restart can't fork the conversation. No-op once adopted (the
+  // lookup returns the same id) and harmless if the bridge is unreachable
+  // (we adopt after the next run instead).
+  const onRunComplete = useCallback(async () => {
+    try {
+      const r = await fetch(
+        `${BRIDGE}/agui/threads/${encodeURIComponent(agent.threadId)}`,
+      );
+      if (r.ok) {
+        const d = await r.json();
+        if (d.codexThreadId && d.codexThreadId !== agent.threadId) {
+          agent.threadId = d.codexThreadId;
+        }
+      }
+    } catch {
+      /* bridge down — leave the local id; adopt after the next run */
+    }
+    void refresh();
+  }, [agent, refresh]);
+
   const attachments = useMemo(() => new SimpleImageAttachmentAdapter(), []);
 
   const runtime = useAgUiRuntime({
@@ -97,7 +121,7 @@ export default function Page() {
         </header>
         <div className="app-body">
           <ThreadListSidebar />
-          <NanocodexThread onRunComplete={refresh} />
+          <NanocodexThread onRunComplete={onRunComplete} />
         </div>
       </div>
     </AssistantRuntimeProvider>

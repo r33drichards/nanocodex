@@ -1,0 +1,56 @@
+# Slack deployment overlay: codex + AG-UI bridge + Slack bot on one host.
+#
+#   SLACK_BOT_TOKEN=xoxb-... SLACK_APP_TOKEN=xapp-... \
+#     docker compose -f docker-compose.yml -f docker-compose.slack.yml up -d --build
+#
+# The bot uses Slack Socket Mode (outbound websockets), so NOTHING here needs
+# a public URL, inbound port, or TLS — any box with outbound internet works.
+# The bridge stays on the internal network; publish 8130 only if the web
+# frontend should reach it too.
+services:
+  codex:
+    volumes:
+      # Per-thread mcp-v8 sandbox state (heaps + session dirs) as configured
+      # by the bridge (--heap-dir /tmp/agui-heaps/<sid>). Without these, a
+      # codex redeploy keeps every transcript but resets the JS sandbox state.
+      - codex-agui-heaps:/tmp/agui-heaps
+      - codex-agui-sessions:/tmp/agui-sessions
+
+  bridge:
+    build: ./client
+    image: nanocodex-bridge:latest
+    environment:
+      NANOCODEX_URL: ws://codex:4500
+      # Durable conversation -> codex-thread bindings, for clients that can't
+      # adopt codex ids (the Slack bot). See agui/threads.py.
+      AGUI_BINDINGS_PATH: /data/bindings.json
+    secrets:
+      # The client discovers the ws capability token via its walk-up search
+      # for `secrets/ws-token` from the workdir (/app).
+      - source: ws_token
+        target: /app/secrets/ws-token
+    volumes:
+      - bridge-data:/data
+    depends_on:
+      codex:
+        condition: service_healthy
+    restart: unless-stopped
+
+  slackbot:
+    build: ./slackbot
+    image: nanocodex-slackbot:latest
+    environment:
+      # :? makes compose fail loudly when the Slack tokens aren't provided.
+      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN:?set SLACK_BOT_TOKEN (xoxb-...)}
+      SLACK_APP_TOKEN: ${SLACK_APP_TOKEN:?set SLACK_APP_TOKEN (xapp-...)}
+      AGENT_URL: http://bridge:8130/agui
+      SLACK_HIDE_TOOL_STATUS: ${SLACK_HIDE_TOOL_STATUS:-}
+    depends_on:
+      bridge:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  codex-agui-heaps:
+  codex-agui-sessions:
+  bridge-data:
