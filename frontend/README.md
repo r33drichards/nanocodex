@@ -39,6 +39,30 @@ runtime/proxy layer. `@assistant-ui/react-ag-ui`'s `useAgUiRuntime` drives it.
   `js.get_execution_output` polls) render via a `tools.Fallback` `RunJsCard`
   that unwraps the MCP result envelope to the `data` (stdout/value) field.
 
+## Generative UI (`render_plotly`)
+
+The bridge gives every thread a second MCP server, `ui`, next to the `js`
+sandbox (`client/nanocodex_client/agui/ui_tools.py`). Its tools are **no-op
+acks whose arguments are the thing to render** — a naive data pipe:
+
+```
+model calls ui.render_plotly({data, layout?, config?})   # a Plotly figure
+  ─► codex streams the tool call through the bridge unchanged
+  ─► thread.tsx's ToolCallPart looks up the bare tool name in TOOL_RENDERERS
+  ─► PlotlyToolCard feeds the args straight into Plotly.react
+```
+
+Because tool calls are codex thread items, generated charts persist in history
+and rehydrate on reload. While arguments are still streaming the card shows a
+"rendering chart…" placeholder (`argsText` only parses once complete, so each
+figure draws once). `plotly.js-dist-min` is dynamically imported, so it stays
+out of the base bundle.
+
+**To add another render tool** (mermaid, table, …): append a tool def to
+`UI_TOOLS` in `ui_tools.py` and register a component under the bare tool name
+in `TOOL_RENDERERS` in `app/thread.tsx`. Anything unregistered falls back to
+the `RunJsCard`.
+
 ## Image input
 
 The composer has an attach button and ⌘V paste. Images go through assistant-ui's
@@ -102,11 +126,14 @@ FRONTEND_URL=http://localhost:3100 client/.venv/bin/python frontend/e2e/test_ass
 - **`test_assistant_ui_images.py`**: attach + ⌘V paste each add an image preview
   (deterministic); `AGUI_VISION_SMOKE=1` also sends it and asserts the model
   names the color.
+- **`test_assistant_ui_plotly.py`**: asks for a `render_plotly` bar chart and
+  asserts a real Plotly SVG renders, then reloads and asserts the chart
+  rehydrates from codex history.
 
 `data-testid` hooks: `thread-list-item`, `new-thread-btn`, `composer-input`,
 `composer-send`, `attach-btn`, `attach-preview`, `user-message`,
 `assistant-message`, `run-js-card`, `run-js-status`, `run-js-code`,
-`run-js-result`.
+`run-js-result`, `plotly-card`, `plotly-chart`, `plotly-pending`.
 
 ## Not yet ported from the CopilotKit version
 

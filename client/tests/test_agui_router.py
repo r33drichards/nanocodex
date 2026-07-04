@@ -32,7 +32,8 @@ class FakeNC:
         FakeNC.resumed.append(thread_id)
         return {"thread": {"id": thread_id}}
 
-    async def create_thread(self, sandbox=None, cwd="/tmp", developer_instructions=None):
+    async def create_thread(self, sandbox=None, cwd="/tmp", developer_instructions=None,
+                            extra_mcp_servers=None):
         FakeNC._n = getattr(FakeNC, "_n", 0) + 1
         tid = f"codex-new-{FakeNC._n}"
         FakeNC.existing.add(tid)
@@ -40,6 +41,7 @@ class FakeNC:
         FakeNC.create_calls.append({
             "sandbox": sandbox, "instructions": developer_instructions,
         })
+        FakeNC.extra_mcp_servers = extra_mcp_servers
         return {"thread": {"id": tid}}
 
     async def list_threads(self, limit=100):
@@ -121,6 +123,8 @@ class RouterTest(unittest.TestCase):
         self.assertIn("--heap-store", call["sandbox"].args)
         self.assertNotIn("--wasm-module", call["sandbox"].args)
         self.assertNotIn("/opt/languages/bootstrap.js", call["instructions"])
+        # new threads get the generative-UI `ui` MCP server next to `js`
+        self.assertIn("ui", FakeNC.extra_mcp_servers)
 
     def test_create_uses_deploy_time_languages_preset(self):
         import asyncio

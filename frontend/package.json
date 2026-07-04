@@ -12,6 +12,7 @@
     "@assistant-ui/react": "0.14.24",
     "@assistant-ui/react-ag-ui": "0.0.43",
     "next": "15.5.7",
+    "plotly.js-dist-min": "^3.7.0",
     "react": "19.2.0",
     "react-dom": "19.2.0"
   },
