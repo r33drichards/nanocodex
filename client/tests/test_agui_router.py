@@ -8,6 +8,7 @@ after a run — what the frontend uses to re-address a new chat by its durable
 codex id).
 """
 
+import os
 import unittest
 
 from fastapi.testclient import TestClient
@@ -21,6 +22,7 @@ class FakeNC:
 
     existing: set[str] = set()
     created: list[str] = []
+    create_calls: list[dict] = []
     resumed: list[str] = []
     read_calls: list[str] = []
 
@@ -39,6 +41,9 @@ class FakeNC:
         tid = f"codex-new-{FakeNC._n}"
         FakeNC.existing.add(tid)
         FakeNC.created.append(tid)
+        FakeNC.create_calls.append({
+            "sandbox": sandbox, "instructions": developer_instructions,
+        })
         FakeNC.extra_mcp_servers = extra_mcp_servers
         return {"thread": {"id": tid}}
 
@@ -73,7 +78,9 @@ class RouterTest(unittest.TestCase):
     def setUp(self):
         FakeNC.existing = {"codex-a", "codex-b"}
         FakeNC.created, FakeNC.resumed, FakeNC.read_calls = [], [], []
+        FakeNC.create_calls = []
         R.store = R.ThreadStore()  # fresh in-memory bindings per test
+        self._env = os.environ.pop("NANOCODEX_SANDBOX", None)
         R._active.clear()
 
         async def _connect(*a, **k):
@@ -85,6 +92,10 @@ class RouterTest(unittest.TestCase):
 
     def tearDown(self):
         R.Nanocodex.connect = self._orig
+        if self._env is not None:
+            os.environ["NANOCODEX_SANDBOX"] = self._env
+        else:
+            os.environ.pop("NANOCODEX_SANDBOX", None)
 
     def test_list_endpoint_returns_codex_summaries(self):
         r = self.client.get("/agui/threads")
@@ -119,8 +130,25 @@ class RouterTest(unittest.TestCase):
         tid = asyncio.run(R._resolve_or_create(nc, "local-xyz", approvals=False))
         self.assertEqual(FakeNC.created, [tid])        # a new codex thread
         self.assertEqual(R._codex_id_for("local-xyz"), tid)  # local id -> codex id
+        # Default deployment: heap persistence, no wasm engines.
+        call = FakeNC.create_calls[-1]
+        self.assertIn("--heap-store", call["sandbox"].args)
+        self.assertNotIn("--wasm-module", call["sandbox"].args)
+        self.assertNotIn("/opt/languages/bootstrap.js", call["instructions"])
         # new threads get the generative-UI `ui` MCP server next to `js`
         self.assertIn("ui", FakeNC.extra_mcp_servers)
+
+    def test_create_uses_deploy_time_languages_preset(self):
+        import asyncio
+        os.environ["NANOCODEX_SANDBOX"] = "languages"
+        nc = FakeNC()
+        asyncio.run(R._resolve_or_create(nc, "local-lang", approvals=False))
+        call = FakeNC.create_calls[-1]
+        # Languages preset: wasm engines on, heap persistence off, and the
+        # bootstrap hint appended to the developer instructions.
+        self.assertIn("--wasm-module", call["sandbox"].args)
+        self.assertNotIn("--heap-store", call["sandbox"].args)
+        self.assertIn("/opt/languages/bootstrap.js", call["instructions"])
 
     # --- POST /agui: turn lifecycle -------------------------------------
 

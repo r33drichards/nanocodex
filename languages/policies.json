@@ -1,0 +1,20 @@
+{
+  "fetch": {
+    "mode": "all",
+    "policies": [
+      {
+        "url": "file:///app/policies/fetch.rego",
+        "rule": "data.mcp.fetch.allow"
+      }
+    ]
+  },
+  "filesystem": {
+    "mode": "all",
+    "policies": [
+      {
+        "url": "file:///opt/languages/filesystem.rego",
+        "rule": "data.mcp.filesystem.allow"
+      }
+    ]
+  }
+}

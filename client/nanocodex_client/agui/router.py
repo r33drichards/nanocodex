@@ -18,7 +18,7 @@ from ag_ui.encoder import EventEncoder
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
-from ..core import Nanocodex, RpcError, SandboxSpec
+from ..core import Nanocodex, RpcError
 from .mapper import (
     RunState,
     map_notification,
@@ -27,6 +27,7 @@ from .mapper import (
     thread_summaries,
     thread_to_agui_messages,
 )
+from .sandbox import instructions_for, sandbox_for
 from .threads import ThreadStore
 from .ui_tools import ui_mcp_server
 
@@ -144,25 +145,6 @@ def _trailing_user_input(messages: list) -> list[dict]:
     return out
 
 
-def _sandbox_for(session_id: str, approvals: bool = False) -> SandboxSpec:
-    """Per-thread mcp-v8 sandbox: heap-dir + a stable, unique --session-id so
-    the sandbox is stateful within the thread and isolated across threads.
-
-    `approvals` opts the thread into human-in-the-loop: tools_approval="prompt"
-    makes Codex elicit approval before each tool call (surfaced to the frontend
-    via the /agui approval side-channel); the default "approve" auto-runs."""
-    return SandboxSpec(
-        args=[
-            "--policies-json", "/app/policies/policies.json",
-            "--heap-store", "dir",
-            "--heap-dir", f"/tmp/agui-heaps/{session_id}",
-            "--session-id", session_id,
-        ],
-        session_dir=f"/tmp/agui-sessions/{session_id}",
-        tools_approval="prompt" if approvals else "approve",
-    )
-
-
 # Codex still injects a generic "read-only filesystem / bash shell / /tmp
 # workspace" environment description even though nanocodex disables those tools.
 # These developer instructions correct that so the model doesn't waste turns
@@ -240,9 +222,11 @@ async def _resolve_or_create(nc: Nanocodex, agui_thread_id: str, approvals: bool
     except RpcError:
         pass
     sid = ThreadStore.new_session_id()
+    # The sandbox preset (and instruction addendum) is deploy-time config —
+    # NANOCODEX_SANDBOX matches the runtime image this instance runs.
     resp = await nc.create_thread(
-        sandbox=_sandbox_for(sid, approvals), cwd="/tmp",
-        developer_instructions=NANOCODEX_INSTRUCTIONS,
+        sandbox=sandbox_for(sid, approvals), cwd="/tmp",
+        developer_instructions=instructions_for(NANOCODEX_INSTRUCTIONS),
         # Generative UI: the `ui` MCP server's render_* tools are no-op acks
         # whose ARGUMENTS the frontend renders (see agui/ui_tools.py).
         extra_mcp_servers={"ui": ui_mcp_server("prompt" if approvals else "approve")},
