@@ -10,12 +10,24 @@ config too:
 
     NANOCODEX_SANDBOX=languages   # the instance runs nanocodex-languages
     NANOCODEX_SANDBOX=default     # (or unset) the base image
+    NANOCODEX_SANDBOX=remote      # no local mcp-v8: threads attach to a
+                                  # remote instance over streamable HTTP
+                                  # (NANOCODEX_MCP_V8_URL, e.g.
+                                  # http://mcp-v8:8080/mcp)
 
 The `languages` preset gives every thread the six --wasm-module engines and a
 persistent per-thread /work filesystem instead of a V8 heap: mcp-v8 rejects
 --heap-store combined with --wasm-module at startup (heap snapshots run in a
 SnapshotCreator isolate that disables WebAssembly), so cross-call state lives
 in /work.
+
+The `remote` preset spawns nothing: each thread's mcp server is a
+streamable-HTTP declaration pointing at NANOCODEX_MCP_V8_URL, with the
+thread's stable session id sent as the X-MCP-Session-Id header — mcp-v8's
+HTTP mode keys per-session state (heap tags / fs labels) off that header, so
+threads stay stateful and isolated on the shared remote instance. State
+semantics (heap vs /work, persistence at all) are whatever the remote server
+was started with.
 """
 
 from __future__ import annotations
@@ -23,6 +35,8 @@ from __future__ import annotations
 import os
 
 from ..core import POLICIES_JSON, SandboxSpec
+
+REMOTE_URL_ENV = "NANOCODEX_MCP_V8_URL"
 
 # The languages image's per-thread sandbox assets (baked by Dockerfile.languages).
 LANGUAGES_POLICIES_JSON = "/opt/languages/policies.json"
@@ -54,13 +68,41 @@ LANGUAGES_INSTRUCTIONS = (
 )
 
 
-def languages_enabled() -> bool:
-    """Whether this deployment runs the nanocodex-languages image (read per
-    call so tests can patch the env)."""
+def sandbox_preset() -> str:
+    """This deployment's sandbox preset (read per call so tests can patch the
+    env): 'default', 'languages', or 'remote'."""
     preset = os.environ.get("NANOCODEX_SANDBOX", "default").strip() or "default"
-    if preset not in ("default", "languages"):
-        raise ValueError(f"NANOCODEX_SANDBOX must be 'default' or 'languages', got {preset!r}")
-    return preset == "languages"
+    if preset not in ("default", "languages", "remote"):
+        raise ValueError(
+            f"NANOCODEX_SANDBOX must be 'default', 'languages' or 'remote', got {preset!r}"
+        )
+    return preset
+
+
+def languages_enabled() -> bool:
+    """Whether this deployment runs the nanocodex-languages image."""
+    return sandbox_preset() == "languages"
+
+
+def _remote_server(session_id: str, approvals: bool) -> dict:
+    """Streamable-HTTP mcp server declaration for a remote mcp-v8 instance.
+    Used verbatim as the thread's `mcp_servers.js` (SandboxSpec.raw), so it
+    carries the timeouts/approval-mode the stdio path sets in to_config()."""
+    url = os.environ.get(REMOTE_URL_ENV, "").strip()
+    if not url:
+        raise ValueError(
+            f"NANOCODEX_SANDBOX=remote requires {REMOTE_URL_ENV} "
+            "(e.g. http://mcp-v8:8080/mcp)"
+        )
+    return {
+        "url": url,
+        # mcp-v8's HTTP mode keys per-session state off this header; a stable
+        # id per thread = stateful within the thread, isolated across threads.
+        "http_headers": {"X-MCP-Session-Id": session_id},
+        "startup_timeout_sec": 30,
+        "tool_timeout_sec": 180,
+        "default_tools_approval_mode": "prompt" if approvals else "approve",
+    }
 
 
 def sandbox_for(session_id: str, approvals: bool = False, languages: bool | None = None) -> SandboxSpec:
@@ -71,13 +113,22 @@ def sandbox_for(session_id: str, approvals: bool = False, languages: bool | None
     default: V8 heap persistence (state survives across run_js calls).
     languages: the six --wasm-module engines plus a persistent /work dir-store
     filesystem — and NO heap flags (see the module docstring).
+    remote: no local process — a streamable-HTTP declaration for the instance
+    at NANOCODEX_MCP_V8_URL, session-keyed via X-MCP-Session-Id.
 
     `approvals` opts the thread into human-in-the-loop: tools_approval="prompt"
     makes Codex elicit approval before each tool call (surfaced to the frontend
     via the /agui approval side-channel); the default "approve" auto-runs."""
     if languages is None:
-        languages = languages_enabled()
-    if languages:
+        preset = sandbox_preset()
+    else:
+        preset = "languages" if languages else "default"
+    if preset == "remote":
+        return SandboxSpec(
+            raw=_remote_server(session_id, approvals),
+            tools_approval="prompt" if approvals else "approve",
+        )
+    if preset == "languages":
         args = [
             "--policies-json", LANGUAGES_POLICIES_JSON,
             "--fs-store", "dir",

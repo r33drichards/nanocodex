@@ -28,11 +28,20 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        arch: [amd64, arm64]
+        # `image` pushes to ${IMAGE}; every other attr to ${IMAGE}-<attr>.
+        attr:
+          - image
+          - standalone
+          - standalone-frontend
+          - standalone-slack
+          - standalone-full
+          - slack-remote
         include:
-          - runner: ubuntu-latest
-            arch: amd64
-          - runner: ubuntu-24.04-arm
-            arch: arm64
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -48,8 +57,10 @@ jobs:
 
       # Cache /nix/store in the GitHub Actions cache, keyed on flake.lock.
       # On a lock hit the rust builds are skipped entirely and the job is
-      # just image assembly + push. The two arches share the repo's 10 GB
-      # cache budget, so keep each store pruned under ~4.5 GB.
+      # just image assembly + push. All attrs share one per-arch key (the
+      # first finisher saves it; the rest hit it next run), and the two
+      # arches share the repo's 10 GB cache budget, so keep each store
+      # pruned under ~4.5 GB.
       - uses: nix-community/cache-nix-action@v6
         with:
           primary-key: nix-${{ matrix.arch }}-${{ hashFiles('flake.lock', 'flake.nix') }}
@@ -60,13 +71,12 @@ jobs:
           purge-created: 0
           purge-primary-key: never
 
-      - name: nix build image
+      - name: nix build + push image (skopeo)
         run: |
-          nix build .#image --print-build-logs
+          attr="${{ matrix.attr }}"
+          if [ "$attr" = image ]; then img="${IMAGE}"; else img="${IMAGE}-${attr}"; fi
+          nix build ".#${attr}" --print-build-logs
           df -h /
-
-      - name: push to ghcr (skopeo)
-        run: |
           # streamLayeredImage output is a script that writes a docker-archive
           # tar to stdout; docker-archive sources must be seekable, so land it
           # in a file first.
@@ -79,7 +89,7 @@ jobs:
             copy --insecure-policy \
             --dest-creds "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" \
             docker-archive:/tmp/nanocodex-image.tar \
-            "docker://${IMAGE}:${{ github.sha }}-${{ matrix.arch }}"
+            "docker://${img}:${{ github.sha }}-${{ matrix.arch }}"
 
   manifest:
     needs: build
@@ -94,16 +104,22 @@ jobs:
             tags="latest ${{ github.sha }}"
           fi
           echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
-          for tag in $tags; do
-            podman manifest create "${IMAGE}:${tag}"
-            podman manifest add "${IMAGE}:${tag}" "docker://${IMAGE}:${{ github.sha }}-amd64"
-            podman manifest add "${IMAGE}:${tag}" "docker://${IMAGE}:${{ github.sha }}-arm64"
-            podman manifest push --all "${IMAGE}:${tag}" "docker://${IMAGE}:${tag}"
+          for suffix in "" -standalone -standalone-frontend -standalone-slack -standalone-full -slack-remote; do
+            for tag in $tags; do
+              podman manifest create "${IMAGE}${suffix}:${tag}"
+              podman manifest add "${IMAGE}${suffix}:${tag}" "docker://${IMAGE}${suffix}:${{ github.sha }}-amd64"
+              podman manifest add "${IMAGE}${suffix}:${tag}" "docker://${IMAGE}${suffix}:${{ github.sha }}-arm64"
+              podman manifest push --all "${IMAGE}${suffix}:${tag}" "docker://${IMAGE}${suffix}:${tag}"
+            done
           done
 
-  # Language-toolbox variant: the just-pushed base image + the WASM engines
-  # from languages/ (Dockerfile.languages). A plain docker build — the layer
-  # only adds /opt/languages assets, no nix involved.
+  # Language-toolbox variants: just-pushed images + the WASM engines from
+  # languages/ (Dockerfile.languages). Plain docker builds — the layer only
+  # adds /opt/languages assets, no nix involved. Two flavors:
+  #   nanocodex-languages            — the plain base + engines
+  #   nanocodex-standalone-languages — standalone-frontend + engines, with
+  #                                    NANOCODEX_SANDBOX=languages baked so
+  #                                    the in-container bridge enables them
   build-languages:
     needs: build
     strategy:
@@ -127,6 +143,11 @@ jobs:
             --build-arg BASE_IMAGE="${IMAGE}:${{ github.sha }}-${{ matrix.arch }}" \
             -t "${IMAGE}-languages:${{ github.sha }}-${{ matrix.arch }}" .
           docker push "${IMAGE}-languages:${{ github.sha }}-${{ matrix.arch }}"
+          docker build -f Dockerfile.languages \
+            --build-arg BASE_IMAGE="${IMAGE}-standalone-frontend:${{ github.sha }}-${{ matrix.arch }}" \
+            --build-arg SANDBOX_PRESET=languages \
+            -t "${IMAGE}-standalone-languages:${{ github.sha }}-${{ matrix.arch }}" .
+          docker push "${IMAGE}-standalone-languages:${{ github.sha }}-${{ matrix.arch }}"
 
   manifest-languages:
     needs: build-languages
@@ -140,11 +161,13 @@ jobs:
             tags="latest ${{ github.sha }}"
           fi
           echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
-          for tag in $tags; do
-            podman manifest create "${IMAGE}-languages:${tag}"
-            podman manifest add "${IMAGE}-languages:${tag}" "docker://${IMAGE}-languages:${{ github.sha }}-amd64"
-            podman manifest add "${IMAGE}-languages:${tag}" "docker://${IMAGE}-languages:${{ github.sha }}-arm64"
-            podman manifest push --all "${IMAGE}-languages:${tag}" "docker://${IMAGE}-languages:${tag}"
+          for suffix in -languages -standalone-languages; do
+            for tag in $tags; do
+              podman manifest create "${IMAGE}${suffix}:${tag}"
+              podman manifest add "${IMAGE}${suffix}:${tag}" "docker://${IMAGE}${suffix}:${{ github.sha }}-amd64"
+              podman manifest add "${IMAGE}${suffix}:${tag}" "docker://${IMAGE}${suffix}:${{ github.sha }}-arm64"
+              podman manifest push --all "${IMAGE}${suffix}:${tag}" "docker://${IMAGE}${suffix}:${tag}"
+            done
           done
 
   # Sticky PR comment with the pullable image references (updated in place on
@@ -163,18 +186,17 @@ jobs:
             const pr = context.issue.number;
             const sha = context.sha; // the PR's merge commit — what the jobs built
             const base = `ghcr.io/${context.repo.owner}/${context.repo.repo}`;
+            const suffixes = ["", "-languages", "-standalone", "-standalone-frontend", "-standalone-slack", "-standalone-full", "-slack-remote", "-standalone-languages"];
             const body = [
               marker,
               "### 📦 PR image builds",
               "",
               "| image | tags |",
               "|---|---|",
-              `| \`${base}\` | \`pr-${pr}\`, \`${sha}\` |`,
-              `| \`${base}-languages\` | \`pr-${pr}\`, \`${sha}\` |`,
+              ...suffixes.map((s) => `| \`${base}${s}\` | \`pr-${pr}\`, \`${sha}\` |`),
               "",
               "```bash",
-              `docker pull ${base}:pr-${pr}`,
-              `docker pull ${base}-languages:pr-${pr}`,
+              ...suffixes.map((s) => `docker pull ${base}${s}:pr-${pr}`),
               "```",
               "",
               `Multi-arch (amd64/arm64). \`pr-${pr}\` tracks the latest push to this PR; the sha tag is immutable (built from the merge commit).`,
