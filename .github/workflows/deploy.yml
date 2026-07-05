@@ -1,0 +1,144 @@
+name: deploy to railway
+
+# Auto-deploys the `nanocodex-standalone-languages` image to Railway after the
+# image build workflow succeeds on main, and also on demand.
+#
+# The image build workflow ("build and push to ghcr") publishes every image it
+# rebuilds under two tags: `latest` and the commit `<sha>`. We deploy the
+# immutable `<sha>` tag so a deploy always pins the exact bits that build
+# produced. On a `workflow_run` trigger that sha is
+# `github.event.workflow_run.head_sha` (the head commit of the run that just
+# finished) — which is exactly the tag the build published.
+#
+# NOTE: `RAILWAY_TOKEN` must be added as a repository secret. Create either an
+# account token or a project token in Railway (Account/Project Settings ->
+# Tokens) and store it as the `RAILWAY_TOKEN` secret in this repo's
+# Settings -> Secrets and variables -> Actions.
+
+on:
+  # Fire when the image build workflow finishes on main. We still gate on a
+  # `success` conclusion inside the job (workflow_run also fires on failure).
+  workflow_run:
+    workflows: ["build and push to ghcr"]
+    types: [completed]
+    branches: [main]
+  # Manual deploy of an arbitrary tag (defaults to `latest`).
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag to deploy (e.g. a commit sha, or `latest`)"
+        required: false
+        default: latest
+
+# Queue deploys instead of clobbering an in-flight one — never cancel a deploy
+# that is already running.
+concurrency:
+  group: railway-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # For workflow_run, only proceed when the build actually succeeded.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      SERVICE_ID: 6c44c77a-772d-4784-acd9-940a52d80530
+      ENVIRONMENT_ID: 54e43c1d-7bd9-4ae7-8776-4f3304a5aab3
+      IMAGE_BASE: ghcr.io/r33drichards/nanocodex-standalone-languages
+    steps:
+      - name: Resolve image tag
+        id: tag
+        run: |
+          # workflow_dispatch: use the user-supplied tag (default `latest`).
+          # workflow_run: use the head sha of the build run — the build
+          # workflow publishes each image under `<sha>`, so that sha IS the tag.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${{ github.event.workflow_run.head_sha }}"
+          fi
+          echo "tag=$TAG" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Guard — image tag must exist
+        id: guard
+        run: |
+          # The build is path-filtered: standalone-languages is only rebuilt
+          # when its inputs (languages/**, client/**, core, frontend) change.
+          # Most main pushes therefore DON'T publish a new `<sha>` tag for this
+          # image. Inspect the manifest first (public image, no auth needed) and
+          # skip cleanly if the tag isn't there — nothing to deploy.
+          TAG="${{ steps.tag.outputs.tag }}"
+          if docker buildx imagetools inspect "$IMAGE_BASE:$TAG" >/dev/null 2>&1; then
+            echo "exists=true" | tee -a "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Image $IMAGE_BASE:$TAG not found — this build did not rebuild standalone-languages. Skipping deploy."
+            echo "exists=false" | tee -a "$GITHUB_OUTPUT"
+          fi
+
+      - name: Require RAILWAY_TOKEN
+        if: ${{ steps.guard.outputs.exists == 'true' }}
+        run: |
+          if [ -z "$RAILWAY_TOKEN" ]; then
+            echo "::error::RAILWAY_TOKEN secret is empty. Add a Railway account or project token as the RAILWAY_TOKEN repo secret." >&2
+            exit 1
+          fi
+
+      - name: Deploy to Railway
+        if: ${{ steps.guard.outputs.exists == 'true' }}
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          API="https://backboard.railway.com/graphql/v2"
+          IMAGE="$IMAGE_BASE:$TAG"
+          echo "Deploying $IMAGE to service $SERVICE_ID (env $ENVIRONMENT_ID)"
+
+          # 1) Point the service instance at the new image. Build the JSON body
+          #    with `jq -nc` so the values are escaped safely.
+          UPDATE_QUERY='mutation($s:String!,$e:String!,$img:String!){ serviceInstanceUpdate(serviceId:$s, environmentId:$e, input:{ source:{ image:$img } }) }'
+          UPDATE_BODY=$(jq -nc \
+            --arg q "$UPDATE_QUERY" \
+            --arg s "$SERVICE_ID" \
+            --arg e "$ENVIRONMENT_ID" \
+            --arg img "$IMAGE" \
+            '{query:$q, variables:{s:$s, e:$e, img:$img}}')
+          echo "== serviceInstanceUpdate =="
+          curl -sS --fail-with-body -X POST "$API" \
+            -H "Authorization: Bearer $RAILWAY_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data "$UPDATE_BODY"
+          echo
+
+          # 2) Trigger the deployment of the updated service instance.
+          DEPLOY_QUERY='mutation($s:String!,$e:String!){ serviceInstanceDeployV2(serviceId:$s, environmentId:$e) }'
+          DEPLOY_BODY=$(jq -nc \
+            --arg q "$DEPLOY_QUERY" \
+            --arg s "$SERVICE_ID" \
+            --arg e "$ENVIRONMENT_ID" \
+            '{query:$q, variables:{s:$s, e:$e}}')
+          echo "== serviceInstanceDeployV2 =="
+          DEPLOY_RESP=$(curl -sS --fail-with-body -X POST "$API" \
+            -H "Authorization: Bearer $RAILWAY_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data "$DEPLOY_BODY") || DEPLOY_RESP=""
+          echo "$DEPLOY_RESP"
+
+          # Fallback: if serviceInstanceDeployV2 isn't a known field on this
+          # API, redeploy the service instance instead.
+          if echo "$DEPLOY_RESP" | grep -qiE 'Cannot query field .serviceInstanceDeployV2.|unknown field'; then
+            echo "== serviceInstanceDeployV2 unavailable — falling back to serviceInstanceRedeploy =="
+            REDEPLOY_QUERY='mutation($s:String!,$e:String!){ serviceInstanceRedeploy(serviceId:$s, environmentId:$e) }'
+            REDEPLOY_BODY=$(jq -nc \
+              --arg q "$REDEPLOY_QUERY" \
+              --arg s "$SERVICE_ID" \
+              --arg e "$ENVIRONMENT_ID" \
+              '{query:$q, variables:{s:$s, e:$e}}')
+            curl -sS --fail-with-body -X POST "$API" \
+              -H "Authorization: Bearer $RAILWAY_TOKEN" \
+              -H "Content-Type: application/json" \
+              --data "$REDEPLOY_BODY"
+            echo
+          fi
+
+          echo "Deploy request submitted for $IMAGE"
