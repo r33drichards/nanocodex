@@ -248,10 +248,12 @@ sandbox as a streamable-HTTP mcp server at `NANOCODEX_MCP_V8_URL` (run with
 `nanocodex-standalone` instance's `:8080` works as that remote). Per-thread
 state is keyed on the remote server via the `X-MCP-Session-Id` header, so
 threads stay stateful and isolated; state semantics (heap persistence, /work)
-are whatever the remote server was started with. The frontend bakes the bridge origin at build time
-(`NEXT_PUBLIC_BRIDGE_URL`, default `http://127.0.0.1:8130`) — the browser
-calls the bridge directly, so publish 8130 on the same host, or rebuild the
-flake with a different URL for remote hosts. `nanocodex-standalone-languages`
+are whatever the remote server was started with. The frontend is built
+same-origin (`NEXT_PUBLIC_BRIDGE_URL=""`): the browser's `/agui/...` calls
+hit the next server, which proxies them to the in-container bridge
+(`BRIDGE_PROXY_TARGET` rewrite, set by supervisord) — publishing port 3000
+alone is enough on any host; 8130 is only for direct bridge access.
+`nanocodex-standalone-languages`
 is `Dockerfile.languages` built with
 `--build-arg BASE_IMAGE=…-standalone-frontend --build-arg SANDBOX_PRESET=languages`.
 

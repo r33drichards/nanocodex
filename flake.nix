@@ -199,10 +199,12 @@
             '';
           };
 
-          # Next.js frontend, `next build` at nix build time. The bridge
-          # origin the BROWSER calls is baked in at build time
-          # (NEXT_PUBLIC_* is inlined by next build): publish the bridge on
-          # host port 8130 or rebuild with a different URL.
+          # Next.js frontend, `next build` at nix build time. Built with
+          # NEXT_PUBLIC_BRIDGE_URL="" (inlined by next build): the browser
+          # makes same-origin /agui/... calls, which `next start` proxies to
+          # the in-container bridge via the BRIDGE_PROXY_TARGET rewrite
+          # (runtime config, set on frontendProgram below) — so one public
+          # port (3000) serves UI + bridge on any host.
           frontendApp = pkgsTools.buildNpmPackage {
             pname = "nanocodex-frontend";
             version = "0.2.0";
@@ -210,7 +212,7 @@
             npmDepsHash = "sha256-4b3vngjnIOiCWZaTJFheCkYTbN3QqLDs8lFQjyNiqCg=";
             env = {
               NEXT_TELEMETRY_DISABLED = "1";
-              NEXT_PUBLIC_BRIDGE_URL = "http://127.0.0.1:8130";
+              NEXT_PUBLIC_BRIDGE_URL = "";
             };
             installPhase = ''
               runHook preInstall
@@ -272,6 +274,7 @@
             priority = 40;
             command = "/bin/node /opt/frontend/node_modules/next/dist/bin/next start --hostname 0.0.0.0 --port 3000";
             directory = "/opt/frontend";
+            environment = ''BRIDGE_PROXY_TARGET="http://127.0.0.1:8130"'';
           };
           slackbotProgram = {
             name = "slackbot";
