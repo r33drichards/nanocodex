@@ -54,14 +54,35 @@ SKILLS_POLICIES_JSON = "/opt/languages/policies-skills.json"
 LANGUAGES_BOOTSTRAP = "/opt/languages/bootstrap.js"
 SKILLS_DIR = "/codex-home/skills"
 
-# name=path:memory-cap, mirroring the mcp-js toolbox image's --wasm-module set.
+# (name, wasm path, memory cap, stub description). mcp-v8 exposes each loaded
+# module as a `runjs__wasm__<name>` STUB tool (--wasm-stubs, default on) so the
+# agent can DISCOVER the engines via tools/list; calling a stub returns
+# instructions to use the module from run_js. The descriptions embed the exact
+# helper call so the model knows how to invoke each after loading bootstrap.js.
 _WASM_MODULES = [
-    ("picat", "/opt/languages/picat.wasm", "512m"),
-    ("tla", "/opt/languages/tla_checker.wasm", "512m"),
-    ("minizinc", "/opt/languages/minizinc.wasm", "1g"),
-    ("autolisp", "/opt/languages/acadlisp.wasm", "512m"),
-    ("lua", "/opt/languages/lua.wasm", "512m"),
-    ("craftos", "/opt/languages/craftos.wasm", "512m"),
+    ("picat", "/opt/languages/picat.wasm", "512m",
+     "Picat logic/constraint language. In run_js after "
+     "(0,eval)(await fs.readFile('/opt/languages/bootstrap.js','utf8')): "
+     "await picat(code, args?) -> {stdout, stderr, exitCode}."),
+    ("tla", "/opt/languages/tla_checker.wasm", "512m",
+     "TLA+ model checker. In run_js after loading bootstrap.js: "
+     "await tlaplus(spec, opts?) (inline '---- CONFIG ----' supported)."),
+    ("minizinc", "/opt/languages/minizinc.wasm", "1g",
+     "MiniZinc constraint solver. In run_js after loading bootstrap.js: "
+     "await minizinc(model, {data?, args?}?) -> {status, solutions, ...}."),
+    ("autolisp", "/opt/languages/acadlisp.wasm", "512m",
+     "AutoLISP interpreter. In run_js after loading bootstrap.js: "
+     "await autolisp(code) -> {result, output, svg}."),
+    ("lua", "/opt/languages/lua.wasm", "512m",
+     "Lua 5.4 VM. In run_js after loading bootstrap.js: "
+     "await lua(code, opts?) -> {result, stdout, error}."),
+    ("craftos", "/opt/languages/craftos.wasm", "512m",
+     "ComputerCraft/CC:Tweaked emulator (networked computers + turtles). In "
+     "run_js after loading bootstrap.js: await craftos({timeout_ms?, nodes:["
+     "{program, label?, collect?:true, position?, world?}]}) -> {net, nodes:["
+     "{label, id, output, turtle}]}. A node's `output` is only what its program "
+     "passes to emit(...); print() is NOT captured; call done() to finish. See "
+     "the craftos-sim skill for the full node/turtle/GPS API."),
 ]
 
 # V8 heap cap (MB) for the wasm presets. mcp-v8 defaults to 8MB, but
@@ -84,7 +105,13 @@ LANGUAGES_INSTRUCTIONS = (
     "language engines. Load the language helpers once per run with "
     "(0,eval)(await fs.readFile('/opt/languages/bootstrap.js')) which defines "
     "picat, tlaplus, minizinc, autolisp, lua, craftos, jsx, markdown, and "
-    "mermaid. V8 heap persistence is disabled on this thread (heap snapshots "
+    "mermaid. Each engine is also listed as a `runjs__wasm__<name>` tool whose "
+    "description carries its exact call signature; the loaded bootstrap also "
+    "returns a `__LANG.helpers` map documenting every signature. NOTE on "
+    "craftos (ComputerCraft): call craftos({nodes:[{program, collect:true}]}); "
+    "a node's returned `output` is ONLY what its Lua passes to emit(...) — "
+    "print() is NOT captured — and end multi-line programs with done(). "
+    "V8 heap persistence is disabled on this thread (heap snapshots "
     "and WASM modules are mutually exclusive in mcp-v8) — persist cross-call "
     "state in /work instead."
 )
@@ -97,7 +124,14 @@ SKILLS_INSTRUCTIONS = (
     "(load once per run with "
     "(0,eval)(await fs.readFile('/opt/languages/bootstrap.js')) which defines "
     "picat, tlaplus, minizinc, autolisp, lua, craftos, jsx, markdown, and "
-    "mermaid) and REAL filesystem access to two writable areas: /work — a "
+    "mermaid; each is also a `runjs__wasm__<name>` tool whose description "
+    "carries its call signature, and the loaded bootstrap returns a "
+    "`__LANG.helpers` map of every signature). NOTE on craftos "
+    "(ComputerCraft): call craftos({nodes:[{program, collect:true}]}); a "
+    "node's returned `output` is ONLY what its Lua passes to emit(...) — "
+    "print() is NOT captured — and end multi-line programs with done(); see "
+    "the craftos-sim skill for the full API. Threads also get REAL filesystem "
+    "access to two writable areas: /work — a "
     "persistent scratch space shared by all threads (namespace your files) — "
     "and /codex-home/skills — this agent's own skill library. Each skill is "
     "a directory /codex-home/skills/<name>/ containing a SKILL.md with YAML "
@@ -179,8 +213,9 @@ def sandbox_for(session_id: str, approvals: bool = False, languages: bool | None
             "--heap-memory-max", _WASM_HEAP_MEMORY_MAX_MB,
             "--session-id", session_id,
         ]
-        for name, path, cap in _WASM_MODULES:
+        for name, path, cap, desc in _WASM_MODULES:
             args += ["--wasm-module", f"{name}={path}:{cap}"]
+            args += ["--wasm-stub-description", f"{name}={desc}"]
     elif preset == "languages":
         args = [
             "--policies-json", LANGUAGES_POLICIES_JSON,
@@ -190,8 +225,9 @@ def sandbox_for(session_id: str, approvals: bool = False, languages: bool | None
             "--fs-passthrough",
             "--session-id", session_id,
         ]
-        for name, path, cap in _WASM_MODULES:
+        for name, path, cap, desc in _WASM_MODULES:
             args += ["--wasm-module", f"{name}={path}:{cap}"]
+            args += ["--wasm-stub-description", f"{name}={desc}"]
     else:
         args = [
             "--policies-json", POLICIES_JSON,

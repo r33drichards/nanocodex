@@ -100,6 +100,14 @@ class SandboxPresetTest(_EnvMixin):
         # the wasm presets must raise it well above the default.
         hm = spec.args[spec.args.index("--heap-memory-max") + 1]
         self.assertGreaterEqual(int(hm), 128)
+        # Each engine is exposed as a discoverable stub tool with a description.
+        stub_descs = [
+            spec.args[i + 1]
+            for i, a in enumerate(spec.args)
+            if a == "--wasm-stub-description"
+        ]
+        self.assertEqual(len(stub_descs), 6)
+        self.assertTrue(any(d.startswith("craftos=") for d in stub_descs))
 
     def test_skills_instructions_mention_skill_editing(self):
         os.environ["NANOCODEX_SANDBOX"] = "skills"
