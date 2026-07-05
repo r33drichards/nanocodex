@@ -213,9 +213,6 @@
             env = {
               NEXT_TELEMETRY_DISABLED = "1";
               NEXT_PUBLIC_BRIDGE_URL = "";
-              # next build freezes rewrites() into routes-manifest.json, so
-              # the proxy destination must be set HERE, not at next start.
-              BRIDGE_PROXY_TARGET = "http://127.0.0.1:8130";
             };
             installPhase = ''
               runHook preInstall
@@ -361,13 +358,14 @@
             directory = "/app";
             environment = ''NANOCODEX_URL="ws://127.0.0.1:4500",AGUI_BINDINGS_PATH="/data/agui/bindings.json"'';
           };
-          # No BRIDGE_PROXY_TARGET here: rewrites are baked at build (above);
-          # a runtime env would be silently ignored by `next start`.
+          # BRIDGE_PROXY_TARGET is read per request by the app's /agui route
+          # handler (NOT a rewrite — rewrites buffer SSE and are build-frozen).
           frontendProgram = {
             name = "frontend";
             priority = 40;
             command = "/bin/node /opt/frontend/node_modules/next/dist/bin/next start --hostname 0.0.0.0 --port 3000";
             directory = "/opt/frontend";
+            environment = ''BRIDGE_PROXY_TARGET="http://127.0.0.1:8130"'';
           };
           slackbotProgram = {
             name = "slackbot";
