@@ -81,6 +81,29 @@ class SandboxPresetTest(_EnvMixin):
         pj = spec.args[spec.args.index("--policies-json") + 1]
         self.assertEqual(pj, "/opt/languages/policies.json")
 
+    def test_skills_preset_real_fs_no_mount(self):
+        os.environ["NANOCODEX_SANDBOX"] = "skills"
+        spec = sandbox_for("sid-5")
+        # No snapshot mount: a mount would swallow writes into the overlay,
+        # and the whole point is writing /codex-home/skills on the real fs.
+        self.assertNotIn("--fs-store", spec.args)
+        self.assertNotIn("--fs-dir", spec.args)
+        self.assertNotIn("--fs-passthrough", spec.args)
+        self.assertNotIn("--heap-store", spec.args)
+        # Engines still present, skills policy document selected.
+        modules = [spec.args[i + 1] for i, a in enumerate(spec.args) if a == "--wasm-module"]
+        self.assertEqual(len(modules), 6)
+        pj = spec.args[spec.args.index("--policies-json") + 1]
+        self.assertEqual(pj, "/opt/languages/policies-skills.json")
+        self.assertIn("sid-5", spec.args)  # --session-id value
+
+    def test_skills_instructions_mention_skill_editing(self):
+        os.environ["NANOCODEX_SANDBOX"] = "skills"
+        text = instructions_for("base")
+        self.assertTrue(text.startswith("base"))
+        self.assertIn("/codex-home/skills", text)
+        self.assertIn("SKILL.md", text)
+
     def test_remote_preset_streamable_http_raw(self):
         os.environ["NANOCODEX_SANDBOX"] = "remote"
         os.environ[REMOTE_URL_ENV] = "http://mcp-v8.internal:8080/mcp"
