@@ -168,8 +168,9 @@ The base image stays minimal. A second, optional image —
 "toolbox" WASM language engines onto it at `/opt/languages/`: picat, tla+,
 minizinc, autolisp, lua, craftos, plus a generated `bootstrap.js` adding jsx,
 markdown, and mermaid helpers (assets in `languages/`, vendored from
-open-agents' `deploy/mcp-js`). CI publishes it as
-`ghcr.io/r33drichards/nanocodex-languages`.
+open-agents' `deploy/mcp-js`) — and headless Chromium with a browser
+automation MCP server at `/opt/browser/` (`browser-mcp-server/`, ported from
+NanoClaw). CI publishes it as `ghcr.io/r33drichards/nanocodex-languages`.
 
 **One instance runs one image, chosen at deploy time** — want the other
 image, deploy another instance. `docker compose up` runs the base instance;
@@ -197,6 +198,15 @@ disables WebAssembly), so cross-call state lives in `/work` instead. In a
 languages thread the model loads the helpers with
 `(0,eval)(await fs.readFile('/opt/languages/bootstrap.js'))`. Unset (or
 `default`), the bridge behaves exactly as before.
+
+On the `languages` and `skills` presets the bridge also declares a second
+per-thread stdio MCP server, **`browser`** — the image's
+`/opt/browser/server.js` driving headless Chromium via puppeteer-core. Its
+one tool, `browser_execute`, runs a composable pipeline of operations
+(navigate, setContent, wait, screenshot, pdf, evaluate, click, type,
+select); screenshots and PDFs are written under `/work/browser`, where the
+js sandbox's filesystem can read them back. Each call launches and closes
+its own Chromium, so nothing leaks between calls or threads.
 
 ### Standalone deployment mode (one container, supervisord)
 

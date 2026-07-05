@@ -7,6 +7,7 @@ import unittest
 from nanocodex_client.agui.sandbox import (
     LANGUAGES_INSTRUCTIONS,
     REMOTE_URL_ENV,
+    extra_mcp_servers_for,
     instructions_for,
     languages_enabled,
     sandbox_for,
@@ -141,6 +142,43 @@ class SandboxPresetTest(_EnvMixin):
         self.assertTrue(with_langs.startswith(base))
         self.assertIn(LANGUAGES_INSTRUCTIONS, with_langs)
         self.assertIn("/opt/languages/bootstrap.js", with_langs)
+
+
+class BrowserServerTest(_EnvMixin):
+    """The `browser` MCP server rides along only on the languages images —
+    presets `languages` and `skills` — which bake Chromium + /opt/browser."""
+
+    def test_absent_on_default_and_remote(self):
+        self.assertEqual(extra_mcp_servers_for(), {})
+        os.environ["NANOCODEX_SANDBOX"] = "remote"
+        self.assertEqual(extra_mcp_servers_for(), {})
+
+    def test_present_on_languages_and_skills(self):
+        for preset in ("languages", "skills"):
+            os.environ["NANOCODEX_SANDBOX"] = preset
+            servers = extra_mcp_servers_for()
+            self.assertEqual(list(servers), ["browser"], preset)
+            b = servers["browser"]
+            self.assertEqual(b["command"], "/bin/node")
+            self.assertEqual(b["args"], ["/opt/browser/server.js"])
+            # Baked image paths the server needs (see flake.nix browserOpt).
+            self.assertEqual(b["env"]["CHROMIUM_PATH"], "/usr/bin/chromium")
+            self.assertEqual(b["env"]["BROWSER_OUTPUT_DIR"], "/work/browser")
+            self.assertEqual(b["default_tools_approval_mode"], "approve")
+
+    def test_approvals_flag_maps_to_prompt(self):
+        os.environ["NANOCODEX_SANDBOX"] = "languages"
+        b = extra_mcp_servers_for(approvals=True)["browser"]
+        self.assertEqual(b["default_tools_approval_mode"], "prompt")
+
+    def test_instructions_mention_browser(self):
+        for preset in ("languages", "skills"):
+            os.environ["NANOCODEX_SANDBOX"] = preset
+            text = instructions_for("base")
+            self.assertIn("browser_execute", text)
+            self.assertIn("/work/browser", text)
+        os.environ["NANOCODEX_SANDBOX"] = "default"
+        self.assertNotIn("browser_execute", instructions_for("base"))
 
 
 if __name__ == "__main__":
