@@ -211,10 +211,10 @@ processes share the container filesystem.
 
 | image (`ghcr.io/r33drichards/…`) | processes | ports |
 |---|---|---|
-| `nanocodex-standalone` | mcp-v8 + codex | 4500, 8080 |
-| `nanocodex-standalone-frontend` | + AG-UI bridge + Next.js UI | + 8130, 3000 |
-| `nanocodex-standalone-slack` | + AG-UI bridge + Slack bot | + 8130 |
-| `nanocodex-standalone-full` | + bridge + UI + Slack bot | + 8130, 3000 |
+| `nanocodex-standalone` | mcp-v8 + codex + AG-UI bridge | 4500, 8080, 8130 |
+| `nanocodex-standalone-frontend` | + Next.js UI | + 3000 |
+| `nanocodex-standalone-slack` | + Slack bot | |
+| `nanocodex-standalone-full` | + UI + Slack bot | + 3000 |
 | `nanocodex-standalone-languages` | standalone-frontend + `/opt/languages` engines, `NANOCODEX_SANDBOX=languages` baked | + 8130, 3000 |
 
 ```bash

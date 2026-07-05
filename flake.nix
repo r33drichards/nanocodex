@@ -325,7 +325,9 @@
 
           standaloneImage = mkStandaloneImage {
             name = "ghcr.io/r33drichards/nanocodex-standalone";
-            programs = [ mcpV8Program codexProgram ];
+            programs = [ mcpV8Program codexProgram bridgeProgram ];
+            extraPorts = [ 8130 ];
+            extraFakeRoot = bridgeFakeRoot;
           };
           standaloneFrontendImage = mkStandaloneImage {
             name = "ghcr.io/r33drichards/nanocodex-standalone-frontend";
