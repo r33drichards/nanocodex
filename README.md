@@ -33,10 +33,9 @@ deployment where **the only tool the model can use is a per-thread
 ## Quick start
 
 ```bash
-# 1. Build the image (compiles codex app-server + mcp-v8 from the pinned forks)
-docker compose build
-
-# 2. Start the app server (model auth via the provider in codex-home/config.toml)
+# 1. Start the app server from the published nix-built image (model auth via
+#    the provider in codex-home/config.toml). To build locally instead:
+#    nix build .#image && ./result | docker load
 AZURE_OPENAI_API_KEY=... docker compose up -d     # or OPENAI_API_KEY=...
 
 # 3. Install the client package (core lib + CLI + HTTP + MCP frontends)
@@ -165,7 +164,7 @@ an allowlist — see `policies/README.md`.
 ### Runtime images: default vs `nanocodex-languages` (deploy-time choice)
 
 The base image stays minimal. A second, optional image —
-**`nanocodex-languages`** (`Dockerfile.languages`) — layers the mcp-js
+**`nanocodex-languages`** (flake attr `languages`) — layers the mcp-js
 "toolbox" WASM language engines onto it at `/opt/languages/`: picat, tla+,
 minizinc, autolisp, lua, craftos, plus a generated `bootstrap.js` adding jsx,
 markdown, and mermaid helpers (assets in `languages/`, vendored from
@@ -254,8 +253,10 @@ hit the next server, which proxies them to the in-container bridge
 (`BRIDGE_PROXY_TARGET` rewrite, baked at build time) — publishing port 3000
 alone is enough on any host; 8130 is only for direct bridge access.
 `nanocodex-standalone-languages`
-is `Dockerfile.languages` built with
-`--build-arg BASE_IMAGE=…-standalone-frontend --build-arg SANDBOX_PRESET=languages`.
+(flake attr `standalone-languages`) is standalone-frontend + the engines with
+the `skills` sandbox preset — real-fs `/work` plus a self-editable skill
+library at `/codex-home/skills` — and Ollama Cloud `glm-5.2` as the default
+model.
 
 ### Naive passthrough & custom per-thread policies
 
@@ -305,9 +306,8 @@ anything shared: `openssl rand -hex 32 > secrets/ws-token`.
 ## Repo layout
 
 ```
-Dockerfile             multi-stage build: codex app-server + mcp-v8 → one runtime image
-Dockerfile.languages   base image + WASM language engines at /opt/languages (nanocodex-languages)
-languages/             engine assets for Dockerfile.languages (vendored wasm + bootstrap generator)
+flake.nix              source of truth for ALL images (base, languages, standalone family)
+languages/             engine assets for the languages images (vendored wasm + bootstrap generator)
 docker-compose.yml     the test rig (codex; languages-image instance behind --profile languages)
 codex-home/config.toml global codex config (tool lockdown + API-key model providers)
 policies/              mcp-v8 OPA/rego policy enabling fetch()

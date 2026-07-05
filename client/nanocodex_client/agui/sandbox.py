@@ -28,6 +28,16 @@ HTTP mode keys per-session state (heap tags / fs labels) off that header, so
 threads stay stateful and isolated on the shared remote instance. State
 semantics (heap vs /work, persistence at all) are whatever the remote server
 was started with.
+
+The `skills` preset is `languages` on the REAL filesystem: same six engines,
+but no per-thread fs snapshot store. When a snapshot is mounted, mcp-v8
+routes every write into the per-session overlay, which is exactly what makes
+self-editing skills impossible — the container's /codex-home/skills never
+sees the write. Dropping the mount makes fs ops hit the real container
+filesystem, gated by /opt/languages/policies-skills.json (rw /work, rw
+/codex-home/skills, ro /opt/languages). Trade-offs: /work is SHARED across
+threads (persist it with a volume, not snapshots) and there is no per-thread
+fs time travel. Codex picks up SKILL.md changes on new sessions.
 """
 
 from __future__ import annotations
@@ -40,7 +50,9 @@ REMOTE_URL_ENV = "NANOCODEX_MCP_V8_URL"
 
 # The languages image's per-thread sandbox assets (baked by Dockerfile.languages).
 LANGUAGES_POLICIES_JSON = "/opt/languages/policies.json"
+SKILLS_POLICIES_JSON = "/opt/languages/policies-skills.json"
 LANGUAGES_BOOTSTRAP = "/opt/languages/bootstrap.js"
+SKILLS_DIR = "/codex-home/skills"
 
 # name=path:memory-cap, mirroring the mcp-js toolbox image's --wasm-module set.
 _WASM_MODULES = [
@@ -68,13 +80,33 @@ LANGUAGES_INSTRUCTIONS = (
 )
 
 
+# Appended on a `skills` instance: languages capabilities on the real fs,
+# plus self-editable codex skills.
+SKILLS_INSTRUCTIONS = (
+    "\n\nThis thread's run_js sandbox has the bundled WASM language engines "
+    "(load once per run with "
+    "(0,eval)(await fs.readFile('/opt/languages/bootstrap.js')) which defines "
+    "picat, tlaplus, minizinc, autolisp, lua, craftos, jsx, markdown, and "
+    "mermaid) and REAL filesystem access to two writable areas: /work — a "
+    "persistent scratch space shared by all threads (namespace your files) — "
+    "and /codex-home/skills — this agent's own skill library. Each skill is "
+    "a directory /codex-home/skills/<name>/ containing a SKILL.md with YAML "
+    "frontmatter (name, description) followed by markdown instructions. You "
+    "can read, improve, and create your own skills with fs.readFile / "
+    "fs.writeFile / fs.mkdir / fs.readdir; changes take effect for NEW "
+    "sessions. V8 heap persistence is disabled on this thread — persist "
+    "cross-call state in /work."
+)
+
+
 def sandbox_preset() -> str:
     """This deployment's sandbox preset (read per call so tests can patch the
-    env): 'default', 'languages', or 'remote'."""
+    env): 'default', 'languages', 'skills', or 'remote'."""
     preset = os.environ.get("NANOCODEX_SANDBOX", "default").strip() or "default"
-    if preset not in ("default", "languages", "remote"):
+    if preset not in ("default", "languages", "skills", "remote"):
         raise ValueError(
-            f"NANOCODEX_SANDBOX must be 'default', 'languages' or 'remote', got {preset!r}"
+            "NANOCODEX_SANDBOX must be 'default', 'languages', 'skills' or "
+            f"'remote', got {preset!r}"
         )
     return preset
 
@@ -128,7 +160,17 @@ def sandbox_for(session_id: str, approvals: bool = False, languages: bool | None
             raw=_remote_server(session_id, approvals),
             tools_approval="prompt" if approvals else "approve",
         )
-    if preset == "languages":
+    if preset == "skills":
+        # Real filesystem (no per-thread snapshot mount — a mount would send
+        # writes into the overlay instead of /codex-home/skills; see module
+        # docstring). Policy: rw /work + rw /codex-home/skills, ro engines.
+        args = [
+            "--policies-json", SKILLS_POLICIES_JSON,
+            "--session-id", session_id,
+        ]
+        for name, path, cap in _WASM_MODULES:
+            args += ["--wasm-module", f"{name}={path}:{cap}"]
+    elif preset == "languages":
         args = [
             "--policies-json", LANGUAGES_POLICIES_JSON,
             "--fs-store", "dir",
@@ -153,8 +195,14 @@ def sandbox_for(session_id: str, approvals: bool = False, languages: bool | None
 
 
 def instructions_for(base_instructions: str, languages: bool | None = None) -> str:
-    """Thread developer instructions for this deployment (languages
-    capabilities appended on a languages instance)."""
+    """Thread developer instructions for this deployment (capability
+    addendum appended on languages/skills instances)."""
     if languages is None:
-        languages = languages_enabled()
-    return base_instructions + LANGUAGES_INSTRUCTIONS if languages else base_instructions
+        preset = sandbox_preset()
+    else:
+        preset = "languages" if languages else "default"
+    if preset == "languages":
+        return base_instructions + LANGUAGES_INSTRUCTIONS
+    if preset == "skills":
+        return base_instructions + SKILLS_INSTRUCTIONS
+    return base_instructions

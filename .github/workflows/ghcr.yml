@@ -6,9 +6,9 @@ name: build and push to ghcr
 #
 # Builds are minimal: a `changes` job maps changed paths to the images they
 # feed, and only those images are (re)built. Unchanged images keep their
-# previous tags (`latest`/`pr-N` simply don't advance for them). The
-# languages overlays build FROM this run's sha tag when their base was
-# rebuilt, else FROM `latest`.
+# previous tags (`latest`/`pr-N` simply don't advance for them). Every image
+# is a nix flake attr — the flake is the single source of truth (no
+# Dockerfiles).
 on:
   push:
     branches: [main]
@@ -35,11 +35,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       attrs: ${{ steps.plan.outputs.attrs }}
-      base_rebuilt: ${{ steps.plan.outputs.base_rebuilt }}
-      frontend_rebuilt: ${{ steps.plan.outputs.frontend_rebuilt }}
-      languages: ${{ steps.plan.outputs.languages }}
-      standalone_languages: ${{ steps.plan.outputs.standalone_languages }}
-      languages_any: ${{ steps.plan.outputs.languages_any }}
     steps:
       - uses: actions/checkout@v4
 
@@ -61,7 +56,6 @@ jobs:
               - 'slackbot/**'
             languages:
               - 'languages/**'
-              - 'Dockerfile.languages'
 
       - name: plan builds
         id: plan
@@ -76,31 +70,73 @@ jobs:
             CORE=true CLIENT=true FRONTEND=true SLACKBOT=true LANGUAGES=true
           fi
           # attr -> rebuild condition (rootfs/flake feed everything; the
-          # bridge (client/) is in every supervisord image; frontend and
-          # slackbot only in their variants).
+          # bridge (client/) is in every supervisord image; frontend,
+          # slackbot and the language engines only in their variants).
           declare -A want=()
-          [ "$CORE" = true ] && for a in image standalone standalone-frontend standalone-slack standalone-full slack-remote; do want[$a]=1; done
-          [ "$CLIENT" = true ] && for a in standalone standalone-frontend standalone-slack standalone-full slack-remote; do want[$a]=1; done
-          [ "$FRONTEND" = true ] && for a in standalone-frontend standalone-full; do want[$a]=1; done
+          [ "$CORE" = true ] && for a in image languages standalone standalone-frontend standalone-slack standalone-full slack-remote standalone-languages; do want[$a]=1; done
+          [ "$CLIENT" = true ] && for a in standalone standalone-frontend standalone-slack standalone-full slack-remote standalone-languages; do want[$a]=1; done
+          [ "$FRONTEND" = true ] && for a in standalone-frontend standalone-full standalone-languages; do want[$a]=1; done
           [ "$SLACKBOT" = true ] && for a in standalone-slack standalone-full slack-remote; do want[$a]=1; done
-          attrs=$(for a in image standalone standalone-frontend standalone-slack standalone-full slack-remote; do
+          [ "$LANGUAGES" = true ] && for a in languages standalone-languages; do want[$a]=1; done
+          attrs=$(for a in image languages standalone standalone-frontend standalone-slack standalone-full slack-remote standalone-languages; do
             [ -n "${want[$a]:-}" ] && echo "$a"; done | jq -R . | jq -sc .)
-          base_rebuilt=$([ "$CORE" = true ] && echo true || echo false)
-          frontend_rebuilt=$([ -n "${want[standalone-frontend]:-}" ] && echo true || echo false)
-          languages=$([ "$LANGUAGES" = true ] || [ "$base_rebuilt" = true ] && echo true || echo false)
-          standalone_languages=$([ "$LANGUAGES" = true ] || [ "$frontend_rebuilt" = true ] && echo true || echo false)
-          languages_any=$([ "$languages" = true ] || [ "$standalone_languages" = true ] && echo true || echo false)
-          {
-            echo "attrs=$attrs"
-            echo "base_rebuilt=$base_rebuilt"
-            echo "frontend_rebuilt=$frontend_rebuilt"
-            echo "languages=$languages"
-            echo "standalone_languages=$standalone_languages"
-            echo "languages_any=$languages_any"
-          } | tee -a "$GITHUB_OUTPUT"
+          echo "attrs=$attrs" | tee -a "$GITHUB_OUTPUT"
+
+  # Build every requested attr ONCE per arch and save the nix store cache.
+  # The push matrix below restores that cache, so its per-attr legs are pure
+  # image assembly + push instead of each rebuilding the shared closures
+  # (bridge python env, next build, slackbot) redundantly.
+  compile:
+    needs: changes
+    if: needs.changes.outputs.attrs != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Two full Rust workspaces compile in the nix store; stock runners run
+      # out of disk without this.
+      - name: free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /opt/hostedtoolcache /usr/share/dotnet /opt/ghc
+          df -h /
+
+      - uses: DeterminateSystems/nix-installer-action@v16
+
+      # Cache /nix/store in the GitHub Actions cache. The primary key ends
+      # in the commit sha so this job's save always lands (a key that
+      # already exists is not re-saved), and the push matrix restores the
+      # exact same key so its legs rebuild nothing. Restore falls back to
+      # the newest cache for this flake.lock, then any for this arch. The
+      # two arches share the repo's 10 GB cache budget, so keep each store
+      # pruned under ~4.5 GB; purge evicts the older per-sha entries.
+      - uses: nix-community/cache-nix-action@v6
+        with:
+          primary-key: nix-${{ matrix.arch }}-${{ hashFiles('flake.lock') }}-${{ github.sha }}
+          restore-prefixes-first-match: |
+            nix-${{ matrix.arch }}-${{ hashFiles('flake.lock') }}-
+            nix-${{ matrix.arch }}-
+          gc-max-store-size-linux: 4500M
+          purge: true
+          purge-prefixes: nix-${{ matrix.arch }}-
+          purge-created: 0
+          purge-primary-key: never
+
+      - name: nix build all requested attrs
+        run: |
+          attrs=$(echo '${{ needs.changes.outputs.attrs }}' | jq -r '.[] | ".#" + .')
+          nix build $attrs --print-build-logs
+          df -h /
 
   build:
-    needs: changes
+    needs: [changes, compile]
     if: needs.changes.outputs.attrs != '[]'
     strategy:
       fail-fast: false
@@ -117,8 +153,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Two full Rust workspaces compile in the nix store; stock runners run
-      # out of disk without this.
       - name: free disk space
         run: |
           sudo rm -rf /usr/local/lib/android /opt/hostedtoolcache /usr/share/dotnet /opt/ghc
@@ -126,21 +160,14 @@ jobs:
 
       - uses: DeterminateSystems/nix-installer-action@v16
 
-      # Cache /nix/store in the GitHub Actions cache, keyed on flake.lock.
-      # On a lock hit the rust builds are skipped entirely and the job is
-      # just image assembly + push. All attrs share one per-arch key (the
-      # first finisher saves it; the rest hit it next run), and the two
-      # arches share the repo's 10 GB cache budget, so keep each store
-      # pruned under ~4.5 GB.
-      - uses: nix-community/cache-nix-action@v6
+      # Restore-only: the compile job above already built this commit's
+      # closures and saved them under the per-sha key.
+      - uses: nix-community/cache-nix-action/restore@v6
         with:
-          primary-key: nix-${{ matrix.arch }}-${{ hashFiles('flake.lock', 'flake.nix') }}
-          restore-prefixes-first-match: nix-${{ matrix.arch }}-
-          gc-max-store-size-linux: 4500M
-          purge: true
-          purge-prefixes: nix-${{ matrix.arch }}-
-          purge-created: 0
-          purge-primary-key: never
+          primary-key: nix-${{ matrix.arch }}-${{ hashFiles('flake.lock') }}-${{ github.sha }}
+          restore-prefixes-first-match: |
+            nix-${{ matrix.arch }}-${{ hashFiles('flake.lock') }}-
+            nix-${{ matrix.arch }}-
 
       - name: nix build + push image (skopeo)
         run: |
@@ -185,86 +212,11 @@ jobs:
             done
           done
 
-  # Language-toolbox variants: base images + the WASM engines from
-  # languages/ (Dockerfile.languages). Plain docker builds — the layer only
-  # adds /opt/languages assets, no nix involved. Two flavors:
-  #   nanocodex-languages            — the plain base + engines
-  #   nanocodex-standalone-languages — standalone-frontend + engines, with
-  #                                    NANOCODEX_SANDBOX=languages and
-  #                                    ollama-cloud/glm-5.2 defaults baked
-  # Each flavor builds FROM this run's sha tag when its base was rebuilt
-  # above, else FROM the published `latest`. `!failure() && !cancelled()`
-  # because `build` is legitimately skipped on languages-only changes.
-  build-languages:
-    needs: [changes, build]
-    if: ${{ !failure() && !cancelled() && needs.changes.outputs.languages_any == 'true' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: ubuntu-latest
-            arch: amd64
-          - runner: ubuntu-24.04-arm
-            arch: arm64
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: login to ghcr
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-
-      - name: build and push
-        run: |
-          if [ "${{ needs.changes.outputs.languages }}" = "true" ]; then
-            base="${IMAGE}:latest"
-            [ "${{ needs.changes.outputs.base_rebuilt }}" = "true" ] && base="${IMAGE}:${{ github.sha }}-${{ matrix.arch }}"
-            docker build -f Dockerfile.languages \
-              --build-arg BASE_IMAGE="$base" \
-              -t "${IMAGE}-languages:${{ github.sha }}-${{ matrix.arch }}" .
-            docker push "${IMAGE}-languages:${{ github.sha }}-${{ matrix.arch }}"
-          fi
-          if [ "${{ needs.changes.outputs.standalone_languages }}" = "true" ]; then
-            base="${IMAGE}-standalone-frontend:latest"
-            [ "${{ needs.changes.outputs.frontend_rebuilt }}" = "true" ] && base="${IMAGE}-standalone-frontend:${{ github.sha }}-${{ matrix.arch }}"
-            docker build -f Dockerfile.languages \
-              --build-arg BASE_IMAGE="$base" \
-              --build-arg SANDBOX_PRESET=languages \
-              --build-arg MODEL_PROVIDER=ollama-cloud \
-              --build-arg MODEL=glm-5.2 \
-              -t "${IMAGE}-standalone-languages:${{ github.sha }}-${{ matrix.arch }}" .
-            docker push "${IMAGE}-standalone-languages:${{ github.sha }}-${{ matrix.arch }}"
-          fi
-
-  manifest-languages:
-    needs: [changes, build-languages]
-    if: ${{ !failure() && !cancelled() && needs['build-languages'].result == 'success' }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: assemble and push multi-arch manifest
-        run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            tags="pr-${{ github.event.number }} ${{ github.sha }}"
-          else
-            tags="latest ${{ github.sha }}"
-          fi
-          suffixes=""
-          [ "${{ needs.changes.outputs.languages }}" = "true" ] && suffixes="$suffixes -languages"
-          [ "${{ needs.changes.outputs.standalone_languages }}" = "true" ] && suffixes="$suffixes -standalone-languages"
-          echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
-          for suffix in $suffixes; do
-            for tag in $tags; do
-              podman manifest create "${IMAGE}${suffix}:${tag}"
-              podman manifest add "${IMAGE}${suffix}:${tag}" "docker://${IMAGE}${suffix}:${{ github.sha }}-amd64"
-              podman manifest add "${IMAGE}${suffix}:${tag}" "docker://${IMAGE}${suffix}:${{ github.sha }}-arm64"
-              podman manifest push --all "${IMAGE}${suffix}:${tag}" "docker://${IMAGE}${suffix}:${tag}"
-            done
-          done
-
   # Sticky PR comment listing the images this PR's latest push rebuilt
   # (updated in place on every push).
   pr-comment:
     if: ${{ always() && github.event_name == 'pull_request' && needs.changes.result == 'success' && !failure() && !cancelled() }}
-    needs: [changes, manifest, manifest-languages]
+    needs: [changes, manifest]
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
@@ -278,8 +230,6 @@ jobs:
             const base = `ghcr.io/${context.repo.owner}/${context.repo.repo}`;
             const attrs = JSON.parse(`${{ needs.changes.outputs.attrs }}`);
             const suffixes = attrs.map((a) => (a === "image" ? "" : `-${a}`));
-            if (`${{ needs.changes.outputs.languages }}` === "true") suffixes.push("-languages");
-            if (`${{ needs.changes.outputs.standalone_languages }}` === "true") suffixes.push("-standalone-languages");
             const body = [
               marker,
               "### 📦 PR image builds",

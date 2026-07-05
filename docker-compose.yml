@@ -1,7 +1,8 @@
 services:
   codex:
-    build: .
-    image: nanocodex:latest
+    # Nix-built published image (flake.nix is the source of truth; there is
+    # no Dockerfile). Build locally with `nix build .#image` if needed.
+    image: ghcr.io/r33drichards/nanocodex:latest
     ports:
       - "4500:4500"
     environment:
@@ -23,7 +24,7 @@ services:
     restart: unless-stopped
 
   # ALTERNATIVE instance on the nanocodex-languages image: base runtime plus
-  # the WASM language engines at /opt/languages (see Dockerfile.languages).
+  # the WASM language engines at /opt/languages (flake attr `languages`).
   # Which image an instance runs is a deploy-time choice — this service is
   # behind a profile, so a plain `docker compose up` still runs only the base
   # instance. To deploy the languages instance (:4510) instead/as well:
@@ -32,17 +33,7 @@ services:
   #   NANOCODEX_URL=ws://127.0.0.1:4510 NANOCODEX_SANDBOX=languages
   codex-languages:
     profiles: ["languages"]
-    build:
-      context: .
-      dockerfile: Dockerfile.languages
-      # Layer on the locally built base image; compose builds `codex` first
-      # (needs compose >= 2.22 — otherwise `docker compose build codex` first,
-      # then build this with --build-arg BASE_IMAGE=nanocodex:latest).
-      args:
-        BASE_IMAGE: nanocodex-base
-      additional_contexts:
-        nanocodex-base: "service:codex"
-    image: nanocodex-languages:latest
+    image: ghcr.io/r33drichards/nanocodex-languages:latest
     ports:
       - "4510:4500"
     environment:

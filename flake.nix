@@ -226,6 +226,95 @@
             '';
           };
 
+          # ── /opt/languages: the WASM language engines + bootstrap.js ────
+          # Pure-nix replication of the former Dockerfile.languages gen
+          # stage (fetch-vendor.sh + build-bootstrap.mjs): vendor the pinned
+          # third-party engines, generate bootstrap.js, and lay out
+          # /opt/languages exactly as the sandbox presets expect.
+          languagesVendor = rec {
+            babel = pkgs.fetchurl {
+              url = "https://registry.npmjs.org/@babel/standalone/-/standalone-7.26.4.tgz";
+              hash = "sha256-Fgtct5rVYR9ko0lhONQ6iHx56uvnIiU3jBrJS9DTrDY=";
+            };
+            react = pkgs.fetchurl {
+              url = "https://registry.npmjs.org/react/-/react-18.3.1.tgz";
+              hash = "sha256-jZvtAaZy5+rzh5QteBrUfGpDCJowoDBgYPn9WseHA0c=";
+            };
+            react-dom = pkgs.fetchurl {
+              url = "https://registry.npmjs.org/react-dom/-/react-dom-18.3.1.tgz";
+              hash = "sha256-Ax1EJ6mfLz9srBi7vzCFlKZ+T0fRD0iW/exEZQWwQOA=";
+            };
+            marked = pkgs.fetchurl {
+              url = "https://registry.npmjs.org/marked/-/marked-11.1.1.tgz";
+              hash = "sha256-wp3d737tQNI3vcbniGmFyxlrI09sk2wur11s0rwVObU=";
+            };
+            mermaid = pkgs.fetchurl {
+              url = "https://registry.npmjs.org/mermaid/-/mermaid-9.4.3.tgz";
+              hash = "sha256-S2DQ3/g8zvtK5IKwDzDWQTibhhpnzfUcy4t+7RnPiw4=";
+            };
+            minizinc = pkgs.fetchurl {
+              url = "https://registry.npmjs.org/minizinc/-/minizinc-4.4.6.tgz";
+              hash = "sha256-B699O16733wS0Qlec7DTkemytVf5cKouUtlW1flnSUc=";
+            };
+            wasmoon = pkgs.fetchurl {
+              url = "https://registry.npmjs.org/wasmoon/-/wasmoon-1.16.0.tgz";
+              hash = "sha256-egfLbTmvEJEfq9UHQIM0d7GLR7bwMUjxUhjt9HTIr1Y=";
+            };
+            acadlisp-js = pkgs.fetchurl {
+              url = "https://raw.githubusercontent.com/holg/acadlisp/aa555bbe87f950ceceb8cb587c0735bc69aa2f23/dist/acadlisp-86aa022a7657981b.js";
+              hash = "sha256-b9mf9w9hd/+oMipRaXABTCVA7Dg9R+pJEy50SohiOok=";
+            };
+            acadlisp-wasm = pkgs.fetchurl {
+              url = "https://raw.githubusercontent.com/holg/acadlisp/aa555bbe87f950ceceb8cb587c0735bc69aa2f23/dist/acadlisp-86aa022a7657981b_bg.wasm";
+              hash = "sha256-MiAhWV3GJtDhyCtOJRE7+hfLgMWQfJXZAN8gxUKmM/g=";
+            };
+          };
+
+          languagesOpt = pkgs.runCommand "nanocodex-languages-opt"
+            { nativeBuildInputs = [ pkgsTools.nodejs_22 ]; } ''
+            mkdir -p build/vendor build/package
+            cp -r ${./languages/src} build/src
+            cp ${./languages/build-bootstrap.mjs} build/build-bootstrap.mjs
+            # In-repo engines land in vendor/ (fetch-vendor.sh's final copy).
+            cp ${./languages/engines}/* build/vendor/
+
+            cd build
+            tar -xzf ${languagesVendor.babel} package/babel.min.js
+            mv package/babel.min.js vendor/babel.min.js
+            tar -xzf ${languagesVendor.react} package/umd/react.production.min.js
+            mv package/umd/react.production.min.js vendor/react.min.js
+            tar -xzf ${languagesVendor.react-dom} package/umd/react-dom-server-legacy.browser.production.min.js
+            mv package/umd/react-dom-server-legacy.browser.production.min.js vendor/react-dom-server.min.js
+            tar -xzf ${languagesVendor.marked} package/marked.min.js
+            mv package/marked.min.js vendor/marked.min.js
+            tar -xzf ${languagesVendor.mermaid} package/dist/mermaid.min.js
+            mv package/dist/mermaid.min.js vendor/mermaid.min.js
+            tar -xzf ${languagesVendor.minizinc} package/dist/minizinc-worker.js package/dist/minizinc.data package/dist/minizinc.wasm
+            mv package/dist/minizinc-worker.js vendor/minizinc-worker.js
+            mv package/dist/minizinc.data vendor/minizinc.data
+            mv package/dist/minizinc.wasm vendor/minizinc.wasm
+            tar -xzf ${languagesVendor.wasmoon} package/dist/index.js package/dist/glue.wasm
+            mv package/dist/index.js vendor/wasmoon.js
+            mv package/dist/glue.wasm vendor/lua.wasm
+            cp ${languagesVendor.acadlisp-js} vendor/acadlisp.js
+            cp ${languagesVendor.acadlisp-wasm} vendor/acadlisp.wasm
+
+            mkdir -p $out/opt/languages
+            node build-bootstrap.mjs $out/opt/languages/bootstrap.js
+            for f in picat.wasm tla_checker.wasm minizinc.wasm acadlisp.wasm lua.wasm craftos.wasm; do
+              cp vendor/$f $out/opt/languages/$f
+            done
+            cp ${./languages/filesystem.rego} $out/opt/languages/filesystem.rego
+            cp ${./languages/policies.json} $out/opt/languages/policies.json
+            cp ${./languages/filesystem-skills.rego} $out/opt/languages/filesystem-skills.rego
+            cp ${./languages/policies-skills.json} $out/opt/languages/policies-skills.json
+
+            # Pre-packaged codex skills — languages images only (merged into
+            # /codex-home next to the rootfs-provided config.toml).
+            mkdir -p $out/codex-home
+            cp -r ${./languages/skills} $out/codex-home/skills
+          '';
+
           mkSupervisordConf = programs: pkgs.writeTextDir "etc/supervisord.conf" (''
             [supervisord]
             nodaemon=true
@@ -305,7 +394,7 @@
             ln -sf /run/secrets/ws_token app/secrets/ws-token
           '';
 
-          mkStandaloneImage = { name, programs, extraContents ? [ ], basePorts ? [ 4500 8080 ], extraPorts ? [ ], extraFakeRoot ? "", extraEnv ? [ ] }:
+          mkStandaloneImage = { name, programs, extraContents ? [ ], basePorts ? [ 4500 8080 ], extraPorts ? [ ], extraFakeRoot ? "", extraEnv ? [ ], modelProvider ? "azure", model ? "gpt-5.4" }:
             pkgs.dockerTools.streamLayeredImage {
               inherit name;
               tag = "latest";
@@ -331,8 +420,8 @@
                   "NIX_SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
                   # Consumed by codexProgram's %(ENV_*)s -c overrides; must
                   # exist or supervisord fails conf expansion at startup.
-                  "NANOCODEX_MODEL_PROVIDER=azure"
-                  "NANOCODEX_MODEL=gpt-5.4"
+                  "NANOCODEX_MODEL_PROVIDER=${modelProvider}"
+                  "NANOCODEX_MODEL=${model}"
                 ] ++ extraEnv;
                 ExposedPorts = builtins.listToAttrs
                   (map (p: { name = "${toString p}/tcp"; value = { }; }) (basePorts ++ extraPorts));
@@ -382,6 +471,35 @@
             extraPorts = [ 8130 3000 ];
             extraFakeRoot = bridgeFakeRoot + frontendFakeRoot + slackbotFakeRoot;
           };
+          # standalone-frontend + the language engines, with the `skills`
+          # sandbox preset (real-fs /work + self-editable /codex-home/skills)
+          # and Ollama Cloud glm-5.2 as the default model.
+          standaloneLanguagesImage = mkStandaloneImage {
+            name = "ghcr.io/r33drichards/nanocodex-standalone-languages";
+            programs = [ mcpV8Program codexProgram bridgeProgram frontendProgram ];
+            extraContents = [ pkgsTools.nodejs_22 languagesOpt ];
+            extraPorts = [ 8130 3000 ];
+            extraFakeRoot = bridgeFakeRoot + frontendFakeRoot;
+            extraEnv = [ "NANOCODEX_SANDBOX=skills" ];
+            modelProvider = "ollama-cloud";
+            model = "glm-5.2";
+          };
+
+          baseImageConfig = {
+            Entrypoint = [ "/usr/local/bin/codex-app-server" ];
+            Cmd = [
+              "--listen" "ws://0.0.0.0:4500"
+              "--ws-auth" "capability-token"
+              "--ws-token-file" "/run/secrets/ws_token"
+            ];
+            Env = [
+              "CODEX_HOME=/codex-home"
+              "PATH=/usr/local/bin:/bin"
+              "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
+              "NIX_SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
+            ];
+            ExposedPorts."4500/tcp" = { };
+          };
 
           image = pkgs.dockerTools.streamLayeredImage {
             name = "ghcr.io/r33drichards/nanocodex";
@@ -396,21 +514,26 @@
             fakeRootCommands = ''
               chmod 1777 tmp
             '';
-            config = {
-              Entrypoint = [ "/usr/local/bin/codex-app-server" ];
-              Cmd = [
-                "--listen" "ws://0.0.0.0:4500"
-                "--ws-auth" "capability-token"
-                "--ws-token-file" "/run/secrets/ws_token"
-              ];
-              Env = [
-                "CODEX_HOME=/codex-home"
-                "PATH=/usr/local/bin:/bin"
-                "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
-                "NIX_SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
-              ];
-              ExposedPorts."4500/tcp" = { };
-            };
+            config = baseImageConfig;
+          };
+
+          # The base runtime + the WASM language engines at /opt/languages
+          # (formerly Dockerfile.languages; now pure nix via languagesOpt).
+          languagesImage = pkgs.dockerTools.streamLayeredImage {
+            name = "ghcr.io/r33drichards/nanocodex-languages";
+            tag = "latest";
+            contents = [
+              rootfs
+              languagesOpt
+              pkgs.cacert
+              pkgs.bashInteractive
+              pkgs.coreutils
+              pkgs.curl
+            ];
+            fakeRootCommands = ''
+              chmod 1777 tmp
+            '';
+            config = baseImageConfig;
           };
         in
         {
@@ -419,11 +542,14 @@
           bridge = bridgeEnv;
           slackbot = slackbotApp;
           frontend = frontendApp;
+          languages-opt = languagesOpt;
+          languages = languagesImage;
           standalone = standaloneImage;
           standalone-frontend = standaloneFrontendImage;
           standalone-slack = standaloneSlackImage;
           standalone-full = standaloneFullImage;
           slack-remote = slackRemoteImage;
+          standalone-languages = standaloneLanguagesImage;
           default = image;
         };
     in
