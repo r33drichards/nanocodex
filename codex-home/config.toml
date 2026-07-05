@@ -9,7 +9,13 @@ sandbox_mode = "read-only"
 
 # Model auth via API key env var — no `codex login` required.
 # Default: Azure OpenAI (AZURE_OPENAI_API_KEY). Switch to "openai-api-key"
-# to use api.openai.com with OPENAI_API_KEY instead.
+# to use api.openai.com with OPENAI_API_KEY instead, or "ollama-cloud" to
+# use ollama.com with OLLAMA_API_KEY.
+#
+# The standalone supervisord images override these two keys at startup with
+# `-c model_provider=$NANOCODEX_MODEL_PROVIDER -c model=$NANOCODEX_MODEL`
+# (see flake.nix codexProgram), so there they are runtime env config; the
+# values below are the defaults everywhere else.
 model_provider = "azure"
 model = "gpt-5.4"
 
@@ -24,6 +30,16 @@ wire_api = "responses"
 name = "OpenAI (API key)"
 base_url = "https://api.openai.com/v1"
 env_key = "OPENAI_API_KEY"
+wire_api = "responses"
+
+# Ollama Cloud (https://ollama.com), e.g. model = "glm-5.2". Must NOT be
+# named "ollama" — that id is a codex built-in (local :11434) and built-ins
+# win over configured providers. This fork only speaks the Responses wire
+# API ("chat" was removed), which Ollama serves at /v1/responses.
+[model_providers.ollama-cloud]
+name = "Ollama Cloud"
+base_url = "https://ollama.com/v1"
+env_key = "OLLAMA_API_KEY"
 wire_api = "responses"
 
 [features]

@@ -3,6 +3,12 @@ name: build and push to ghcr
 # main pushes publish `latest` + `<sha>`; pull requests publish the same
 # images under `pr-<number>` + `<sha>` tags and get a sticky PR comment with
 # the pullable references. Fork PRs are skipped (no ghcr write access).
+#
+# Builds are minimal: a `changes` job maps changed paths to the images they
+# feed, and only those images are (re)built. Unchanged images keep their
+# previous tags (`latest`/`pr-N` simply don't advance for them). The
+# languages overlays build FROM this run's sha tag when their base was
+# rebuilt, else FROM `latest`.
 on:
   push:
     branches: [main]
@@ -22,21 +28,86 @@ env:
   IMAGE: ghcr.io/${{ github.repository }}
 
 jobs:
-  build:
+  # Map changed paths -> images to rebuild. workflow_dispatch rebuilds all.
+  changes:
     # PR builds need to push to ghcr, which fork PRs' tokens can't do.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    outputs:
+      attrs: ${{ steps.plan.outputs.attrs }}
+      base_rebuilt: ${{ steps.plan.outputs.base_rebuilt }}
+      frontend_rebuilt: ${{ steps.plan.outputs.frontend_rebuilt }}
+      languages: ${{ steps.plan.outputs.languages }}
+      standalone_languages: ${{ steps.plan.outputs.standalone_languages }}
+      languages_any: ${{ steps.plan.outputs.languages_any }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            core:
+              - 'flake.nix'
+              - 'flake.lock'
+              - 'codex-home/**'
+              - 'policies/**'
+              - '.github/workflows/ghcr.yml'
+            client:
+              - 'client/**'
+            frontend:
+              - 'frontend/**'
+            slackbot:
+              - 'slackbot/**'
+            languages:
+              - 'languages/**'
+              - 'Dockerfile.languages'
+
+      - name: plan builds
+        id: plan
+        env:
+          CORE: ${{ steps.filter.outputs.core }}
+          CLIENT: ${{ steps.filter.outputs.client }}
+          FRONTEND: ${{ steps.filter.outputs.frontend }}
+          SLACKBOT: ${{ steps.filter.outputs.slackbot }}
+          LANGUAGES: ${{ steps.filter.outputs.languages }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            CORE=true CLIENT=true FRONTEND=true SLACKBOT=true LANGUAGES=true
+          fi
+          # attr -> rebuild condition (rootfs/flake feed everything; the
+          # bridge (client/) is in every supervisord image; frontend and
+          # slackbot only in their variants).
+          declare -A want=()
+          [ "$CORE" = true ] && for a in image standalone standalone-frontend standalone-slack standalone-full slack-remote; do want[$a]=1; done
+          [ "$CLIENT" = true ] && for a in standalone standalone-frontend standalone-slack standalone-full slack-remote; do want[$a]=1; done
+          [ "$FRONTEND" = true ] && for a in standalone-frontend standalone-full; do want[$a]=1; done
+          [ "$SLACKBOT" = true ] && for a in standalone-slack standalone-full slack-remote; do want[$a]=1; done
+          attrs=$(for a in image standalone standalone-frontend standalone-slack standalone-full slack-remote; do
+            [ -n "${want[$a]:-}" ] && echo "$a"; done | jq -R . | jq -sc .)
+          base_rebuilt=$([ "$CORE" = true ] && echo true || echo false)
+          frontend_rebuilt=$([ -n "${want[standalone-frontend]:-}" ] && echo true || echo false)
+          languages=$([ "$LANGUAGES" = true ] || [ "$base_rebuilt" = true ] && echo true || echo false)
+          standalone_languages=$([ "$LANGUAGES" = true ] || [ "$frontend_rebuilt" = true ] && echo true || echo false)
+          languages_any=$([ "$languages" = true ] || [ "$standalone_languages" = true ] && echo true || echo false)
+          {
+            echo "attrs=$attrs"
+            echo "base_rebuilt=$base_rebuilt"
+            echo "frontend_rebuilt=$frontend_rebuilt"
+            echo "languages=$languages"
+            echo "standalone_languages=$standalone_languages"
+            echo "languages_any=$languages_any"
+          } | tee -a "$GITHUB_OUTPUT"
+
+  build:
+    needs: changes
+    if: needs.changes.outputs.attrs != '[]'
     strategy:
       fail-fast: false
       matrix:
         arch: [amd64, arm64]
         # `image` pushes to ${IMAGE}; every other attr to ${IMAGE}-<attr>.
-        attr:
-          - image
-          - standalone
-          - standalone-frontend
-          - standalone-slack
-          - standalone-full
-          - slack-remote
+        attr: ${{ fromJson(needs.changes.outputs.attrs) }}
         include:
           - arch: amd64
             runner: ubuntu-latest
@@ -92,7 +163,7 @@ jobs:
             "docker://${img}:${{ github.sha }}-${{ matrix.arch }}"
 
   manifest:
-    needs: build
+    needs: [changes, build]
     runs-on: ubuntu-latest
     steps:
       - name: assemble and push multi-arch manifest
@@ -104,7 +175,8 @@ jobs:
             tags="latest ${{ github.sha }}"
           fi
           echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
-          for suffix in "" -standalone -standalone-frontend -standalone-slack -standalone-full -slack-remote; do
+          for attr in $(echo '${{ needs.changes.outputs.attrs }}' | jq -r '.[]'); do
+            if [ "$attr" = image ]; then suffix=""; else suffix="-${attr}"; fi
             for tag in $tags; do
               podman manifest create "${IMAGE}${suffix}:${tag}"
               podman manifest add "${IMAGE}${suffix}:${tag}" "docker://${IMAGE}${suffix}:${{ github.sha }}-amd64"
@@ -113,15 +185,19 @@ jobs:
             done
           done
 
-  # Language-toolbox variants: just-pushed images + the WASM engines from
+  # Language-toolbox variants: base images + the WASM engines from
   # languages/ (Dockerfile.languages). Plain docker builds — the layer only
   # adds /opt/languages assets, no nix involved. Two flavors:
   #   nanocodex-languages            — the plain base + engines
   #   nanocodex-standalone-languages — standalone-frontend + engines, with
-  #                                    NANOCODEX_SANDBOX=languages baked so
-  #                                    the in-container bridge enables them
+  #                                    NANOCODEX_SANDBOX=languages and
+  #                                    ollama-cloud/glm-5.2 defaults baked
+  # Each flavor builds FROM this run's sha tag when its base was rebuilt
+  # above, else FROM the published `latest`. `!failure() && !cancelled()`
+  # because `build` is legitimately skipped on languages-only changes.
   build-languages:
-    needs: build
+    needs: [changes, build]
+    if: ${{ !failure() && !cancelled() && needs.changes.outputs.languages_any == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -139,18 +215,29 @@ jobs:
 
       - name: build and push
         run: |
-          docker build -f Dockerfile.languages \
-            --build-arg BASE_IMAGE="${IMAGE}:${{ github.sha }}-${{ matrix.arch }}" \
-            -t "${IMAGE}-languages:${{ github.sha }}-${{ matrix.arch }}" .
-          docker push "${IMAGE}-languages:${{ github.sha }}-${{ matrix.arch }}"
-          docker build -f Dockerfile.languages \
-            --build-arg BASE_IMAGE="${IMAGE}-standalone-frontend:${{ github.sha }}-${{ matrix.arch }}" \
-            --build-arg SANDBOX_PRESET=languages \
-            -t "${IMAGE}-standalone-languages:${{ github.sha }}-${{ matrix.arch }}" .
-          docker push "${IMAGE}-standalone-languages:${{ github.sha }}-${{ matrix.arch }}"
+          if [ "${{ needs.changes.outputs.languages }}" = "true" ]; then
+            base="${IMAGE}:latest"
+            [ "${{ needs.changes.outputs.base_rebuilt }}" = "true" ] && base="${IMAGE}:${{ github.sha }}-${{ matrix.arch }}"
+            docker build -f Dockerfile.languages \
+              --build-arg BASE_IMAGE="$base" \
+              -t "${IMAGE}-languages:${{ github.sha }}-${{ matrix.arch }}" .
+            docker push "${IMAGE}-languages:${{ github.sha }}-${{ matrix.arch }}"
+          fi
+          if [ "${{ needs.changes.outputs.standalone_languages }}" = "true" ]; then
+            base="${IMAGE}-standalone-frontend:latest"
+            [ "${{ needs.changes.outputs.frontend_rebuilt }}" = "true" ] && base="${IMAGE}-standalone-frontend:${{ github.sha }}-${{ matrix.arch }}"
+            docker build -f Dockerfile.languages \
+              --build-arg BASE_IMAGE="$base" \
+              --build-arg SANDBOX_PRESET=languages \
+              --build-arg MODEL_PROVIDER=ollama-cloud \
+              --build-arg MODEL=glm-5.2 \
+              -t "${IMAGE}-standalone-languages:${{ github.sha }}-${{ matrix.arch }}" .
+            docker push "${IMAGE}-standalone-languages:${{ github.sha }}-${{ matrix.arch }}"
+          fi
 
   manifest-languages:
-    needs: build-languages
+    needs: [changes, build-languages]
+    if: ${{ !failure() && !cancelled() && needs['build-languages'].result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - name: assemble and push multi-arch manifest
@@ -160,8 +247,11 @@ jobs:
           else
             tags="latest ${{ github.sha }}"
           fi
+          suffixes=""
+          [ "${{ needs.changes.outputs.languages }}" = "true" ] && suffixes="$suffixes -languages"
+          [ "${{ needs.changes.outputs.standalone_languages }}" = "true" ] && suffixes="$suffixes -standalone-languages"
           echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
-          for suffix in -languages -standalone-languages; do
+          for suffix in $suffixes; do
             for tag in $tags; do
               podman manifest create "${IMAGE}${suffix}:${tag}"
               podman manifest add "${IMAGE}${suffix}:${tag}" "docker://${IMAGE}${suffix}:${{ github.sha }}-amd64"
@@ -170,11 +260,11 @@ jobs:
             done
           done
 
-  # Sticky PR comment with the pullable image references (updated in place on
-  # every push to the PR).
+  # Sticky PR comment listing the images this PR's latest push rebuilt
+  # (updated in place on every push).
   pr-comment:
-    if: github.event_name == 'pull_request'
-    needs: [manifest, manifest-languages]
+    if: ${{ always() && github.event_name == 'pull_request' && needs.changes.result == 'success' && !failure() && !cancelled() }}
+    needs: [changes, manifest, manifest-languages]
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
@@ -186,10 +276,15 @@ jobs:
             const pr = context.issue.number;
             const sha = context.sha; // the PR's merge commit — what the jobs built
             const base = `ghcr.io/${context.repo.owner}/${context.repo.repo}`;
-            const suffixes = ["", "-languages", "-standalone", "-standalone-frontend", "-standalone-slack", "-standalone-full", "-slack-remote", "-standalone-languages"];
+            const attrs = JSON.parse(`${{ needs.changes.outputs.attrs }}`);
+            const suffixes = attrs.map((a) => (a === "image" ? "" : `-${a}`));
+            if (`${{ needs.changes.outputs.languages }}` === "true") suffixes.push("-languages");
+            if (`${{ needs.changes.outputs.standalone_languages }}` === "true") suffixes.push("-standalone-languages");
             const body = [
               marker,
               "### 📦 PR image builds",
+              "",
+              suffixes.length ? "Images rebuilt by this PR's latest push (path-filtered; others keep their previous tags):" : "No image inputs changed — nothing rebuilt.",
               "",
               "| image | tags |",
               "|---|---|",

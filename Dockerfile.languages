@@ -32,6 +32,14 @@ FROM ${BASE_IMAGE}
 ARG SANDBOX_PRESET=default
 ENV NANOCODEX_SANDBOX=${SANDBOX_PRESET}
 
+# Default model provider/model for supervisord bases (they turn these into
+# `-c model_provider=... -c model=...` at codex startup; see flake.nix).
+# Inert on the plain base image. Defaults mirror codex-home/config.toml.
+ARG MODEL_PROVIDER=azure
+ARG MODEL=gpt-5.4
+ENV NANOCODEX_MODEL_PROVIDER=${MODEL_PROVIDER} \
+    NANOCODEX_MODEL=${MODEL}
+
 COPY --from=gen /build/bootstrap.js /opt/languages/bootstrap.js
 COPY --from=gen /build/vendor/picat.wasm /build/vendor/tla_checker.wasm \
                 /build/vendor/minizinc.wasm /build/vendor/acadlisp.wasm \

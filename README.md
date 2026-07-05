@@ -229,6 +229,17 @@ docker run -d \
   ghcr.io/r33drichards/nanocodex-standalone-frontend
 ```
 
+**Model provider (standalone images):** provider/model are runtime env
+config — supervisord expands them into `-c model_provider=... -c model=...`
+at codex startup. Defaults: azure + gpt-5.4, except
+`nanocodex-standalone-languages` which defaults to **Ollama Cloud + glm-5.2**
+(`-e OLLAMA_API_KEY=...` required). Override anywhere with
+`-e NANOCODEX_MODEL_PROVIDER=... -e NANOCODEX_MODEL=...`; the provider id
+must exist in `codex-home/config.toml` (`azure`, `openai-api-key`,
+`ollama-cloud`) or be a codex built-in. Ollama Cloud is served via the
+Responses wire API (`https://ollama.com/v1`) — this codex fork does not
+speak chat-completions.
+
 Notes: the Slack variants additionally need `-e SLACK_BOT_TOKEN=... -e
 SLACK_APP_TOKEN=...`. `nanocodex-slack-remote` runs no mcp-v8 at all: the
 bridge is baked with `NANOCODEX_SANDBOX=remote` and declares each thread's
@@ -237,10 +248,12 @@ sandbox as a streamable-HTTP mcp server at `NANOCODEX_MCP_V8_URL` (run with
 `nanocodex-standalone` instance's `:8080` works as that remote). Per-thread
 state is keyed on the remote server via the `X-MCP-Session-Id` header, so
 threads stay stateful and isolated; state semantics (heap persistence, /work)
-are whatever the remote server was started with. The frontend bakes the bridge origin at build time
-(`NEXT_PUBLIC_BRIDGE_URL`, default `http://127.0.0.1:8130`) — the browser
-calls the bridge directly, so publish 8130 on the same host, or rebuild the
-flake with a different URL for remote hosts. `nanocodex-standalone-languages`
+are whatever the remote server was started with. The frontend is built
+same-origin (`NEXT_PUBLIC_BRIDGE_URL=""`): the browser's `/agui/...` calls
+hit the next server, which proxies them to the in-container bridge
+(`BRIDGE_PROXY_TARGET` rewrite, set by supervisord) — publishing port 3000
+alone is enough on any host; 8130 is only for direct bridge access.
+`nanocodex-standalone-languages`
 is `Dockerfile.languages` built with
 `--build-arg BASE_IMAGE=…-standalone-frontend --build-arg SANDBOX_PRESET=languages`.
 

@@ -17,10 +17,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { NanocodexThread, ThreadListSidebar } from "./thread";
 
-// The AG-UI agent (HttpAgent) runs client-side and talks straight to the
-// bridge, which CORS-allows the browser. Codex is the source of truth for
-// threads; the bridge exposes the list + per-thread history.
-const BRIDGE = process.env.NEXT_PUBLIC_BRIDGE_URL || "http://127.0.0.1:8132";
+// The AG-UI agent (HttpAgent) runs client-side and talks to the bridge.
+// NEXT_PUBLIC_BRIDGE_URL is inlined at build: a full origin makes the browser
+// call the bridge directly (CORS-allowed); the empty string "" makes all
+// calls same-origin relative (/agui/...), served by next.config.js's runtime
+// rewrite proxy — the mode the standalone images bake, so one public port
+// (3000) suffices. Unset (local dev) falls back to the dev bridge.
+const BRIDGE = process.env.NEXT_PUBLIC_BRIDGE_URL ?? "http://127.0.0.1:8132";
 
 export default function Page() {
   // One agent for the app. Its `threadId` is the run's threadId (see the
