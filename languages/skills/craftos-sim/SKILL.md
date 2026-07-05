@@ -1,0 +1,119 @@
+---
+name: craftos-sim
+description: Use when writing or running simulated multi-computer ComputerCraft (CC:Tweaked) tests — rednet/GPS networks, turtle programs, or any scenario needing several computers talking to each other — via the deployed craftos MCP server's `run_simulation` tool. Triggers on testing CC Lua logic without a Minecraft server, GPS trilateration, turtle navigation/fleets in a fake world, or "run this CC program in a sim".
+---
+
+# craftos-sim — unified CC simulation runtime
+
+`run_simulation` (MCP tool on the **craftos** connector, served at
+`https://craftos-mcp-production.up.railway.app` — `/mcp` streamable-HTTP and
+`/sse` legacy) boots an arbitrary set of networked CC computers and turtles in an
+embedded CraftOS-PC emulator, runs each node's Lua, and returns what each node
+emits. GPS, rednet protocols, and turtle fleets are all just programs you run on
+it — there are no other special tools.
+
+## Call shape
+
+```json
+{ "timeout_ms": 15000,
+  "nodes": [
+    { "label": "host1", "position": [0,0,0],
+      "program": "periphemu.create('top','modem',NET,true) shell.run('gps','host',0,0,0)" },
+    { "label": "client", "position": [5,5,5], "collect": true,
+      "program": "periphemu.create('top','modem',NET,true) sleep(2) local x,y,z=gps.locate(5) emit(x,y,z) done()" }
+  ] }
+```
+
+Returns `{ "net": N, "nodes": [ {label, id, output, turtle} ] }` where `output`
+is everything that node passed to `emit()`.
+
+## Each node's environment
+
+Ordinary CC:Tweaked Lua, plus these injected globals:
+
+- **`NET`** — this run's wireless-modem network id. Always open modems with
+  `periphemu.create('side','modem', NET, true)` (the `true` = wireless). Every
+  run gets a unique NET, so concurrent simulations are isolated and never
+  cross-talk.
+- **`emit(...)`** — record a tab-joined result line (returned in `output`).
+- **`setpos(x,y,z)`** — move this node's wireless-modem position in the world, so
+  other nodes' `gps.locate()` track it as it travels.
+- **`done()`** — signal the node finished, so the runtime returns its full output
+  promptly instead of waiting for `timeout_ms`. Mark the node `"collect": true`
+  and call `done()` at the end of programs that emit multiple lines.
+
+Node fields: `program` (required), `label`, `position` `[x,y,z]` (modem distance
+for GPS), `collect` (wait for this node's output), and `world` (makes it a
+turtle, below).
+
+## Turtles
+
+CraftOS-PC has no native turtle, so a node with a `world` (or `world_lua`) gets a
+fake-world `turtle` API injected (the `sim/engine.lua` engine).
+
+**`world`** — declarative JSON, **data only** (no Lua functions, because JSON
+can't carry them):
+
+```json
+"world": {
+  "start": { "x":0,"y":0,"z":0, "facing":"south", "fuel":1000,
+             "inventory": { "1": {"name":"minecraft:cobblestone","count":64} } },
+  "blocks": { "0,63,0": "minecraft:stone", "0,62,0": "minecraft:bedrock" },
+  "chests": { "0,64,1": ["minecraft:coal"] },
+  "unbreakable": { "minecraft:bedrock": true }
+}
+```
+
+**`world_lua`** — a Lua chunk that `return`s the world table, for when you need
+**functions**: a procedural `generate(x,y,z)` (terrain for any cell not in
+`blocks`) or a `test(sim)` post-condition. Takes precedence over `world`:
+
+```json
+"world_lua": "return { start={x=0,y=64,z=0,facing='south',fuel=1000}, generate=function(x,y,z) if y<64 then return 'minecraft:stone' end end }"
+```
+
+Inside the program, `turtle.*` works (forward/back/up/down/turn*, dig*, detect*,
+inspect*, place*, select/getItemDetail/transferTo, refuel, suck/drop, fuel), and
+`sim.*` introspects (`sim.pos()`, `sim.facing()`, `sim.fuel()`, `sim.inventory()`,
+`sim.block(x,y,z)`, asserts). Facing: north `-Z`, south `+Z`, east `+X`, west
+`-X`. To make GPS follow a moving turtle, mirror its world position with
+`setpos(sim.pos().x, sim.pos().y, sim.pos().z)` after each move.
+
+## Canonical example — a turtle travels between GPS nodes
+
+4 wireless GPS hosts at non-coplanar corners + a turtle that drives forward in
+its fake world, syncs its modem position, and confirms its location via GPS at
+each step.
+
+```json
+{ "timeout_ms": 20000,
+  "nodes": [
+    {"label":"h1","position":[0,0,0],  "program":"periphemu.create('top','modem',NET,true) shell.run('gps','host',0,0,0)"},
+    {"label":"h2","position":[20,0,0], "program":"periphemu.create('top','modem',NET,true) shell.run('gps','host',20,0,0)"},
+    {"label":"h3","position":[0,20,0], "program":"periphemu.create('top','modem',NET,true) shell.run('gps','host',0,20,0)"},
+    {"label":"h4","position":[0,0,20], "program":"periphemu.create('top','modem',NET,true) shell.run('gps','host',0,0,20)"},
+    {"label":"rover","position":[0,0,0],"collect":true,
+     "world":{"start":{"x":0,"y":0,"z":0,"facing":"south","fuel":1000}},
+     "program":"periphemu.create('top','modem',NET,true)\nsleep(2)\nfor step=1,5 do\n  turtle.forward()\n  local p=sim.pos()\n  setpos(p.x,p.y,p.z)\n  sleep(0.6)\n  local gx,gy,gz=gps.locate(5)\n  emit('step '..step..' world='..p.x..','..p.y..','..p.z..' gps='..tostring(gx)..','..tostring(gy)..','..tostring(gz)..' fuel='..turtle.getFuelLevel())\nend\ndone()"}
+  ] }
+```
+
+Expected `rover` output — world position and GPS-resolved position agree as it
+travels, fuel decrements:
+
+```
+step 1 world=0,0,1 gps=0,0,1 fuel=999
+step 2 world=0,0,2 gps=0,0,2 fuel=998
+step 3 world=0,0,3 gps=0,0,3 fuel=997
+step 4 world=0,0,4 gps=0,0,4 fuel=996
+step 5 world=0,0,5 gps=0,0,5 fuel=995
+```
+
+## Gotchas
+
+- **GPS needs ≥4 hosts that are NOT coplanar** (e.g. corners `(0,0,0),(20,0,0),(0,20,0),(0,0,20)` — not all at the same `z`), or `gps.locate` returns nil.
+- Open modems as **wireless**: the 4th `periphemu.create` arg must be `true`.
+- Give hosts a head start; have clients `sleep(2)` before `gps.locate`.
+- A node that emits multiple lines should be `"collect": true` and end with `done()`.
+- After `setpos`, `sleep(~0.5)` before reading GPS so the runtime applies the move.
+- Use `world` (JSON) for hand-placed blocks; use `world_lua` when the world needs a procedural `generate(x,y,z)` or a `test(sim)` function (JSON can't carry functions).
