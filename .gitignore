@@ -3,3 +3,4 @@ __pycache__/
 .env
 client/.venv/
 .DS_Store
+scratch.md
