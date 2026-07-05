@@ -26,6 +26,12 @@ RUN node build-bootstrap.mjs /build/bootstrap.js
 # ── Stage 2: layer the language assets onto the base runtime ────────────────
 FROM ${BASE_IMAGE}
 
+# For bases that run the AG-UI bridge in-container (the standalone images),
+# bake the sandbox preset so threads get the engines without extra env
+# plumbing. Inert on the plain base image (nothing there reads it).
+ARG SANDBOX_PRESET=default
+ENV NANOCODEX_SANDBOX=${SANDBOX_PRESET}
+
 COPY --from=gen /build/bootstrap.js /opt/languages/bootstrap.js
 COPY --from=gen /build/vendor/picat.wasm /build/vendor/tla_checker.wasm \
                 /build/vendor/minizinc.wasm /build/vendor/acadlisp.wasm \

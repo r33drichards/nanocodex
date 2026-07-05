@@ -60,26 +60,29 @@ jobs:
           purge-created: 0
           purge-primary-key: never
 
-      - name: nix build image
+      - name: nix build + push images (skopeo)
         run: |
-          nix build .#image --print-build-logs
-          df -h /
-
-      - name: push to ghcr (skopeo)
-        run: |
-          # streamLayeredImage output is a script that writes a docker-archive
-          # tar to stdout; docker-archive sources must be seekable, so land it
-          # in a file first.
-          ./result > /tmp/nanocodex-image.tar
           # The runner ships a v1-format /etc/containers/registries.conf that
           # nix's skopeo refuses to parse — point it at a minimal v2 one, and
           # use --dest-creds instead of a login step (no auth-file handling).
           echo 'unqualified-search-registries = ["docker.io"]' > /tmp/registries.conf
-          nix run nixpkgs#skopeo -- --registries-conf /tmp/registries.conf \
-            copy --insecure-policy \
-            --dest-creds "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" \
-            docker-archive:/tmp/nanocodex-image.tar \
-            "docker://${IMAGE}:${{ github.sha }}-${{ matrix.arch }}"
+          # `image` pushes to ${IMAGE}; every other attr to ${IMAGE}-<attr>.
+          # Built+pushed one at a time: streamLayeredImage output is a script
+          # that writes a docker-archive tar to stdout (docker-archive sources
+          # must be seekable, so land it in a file), and the tars are large —
+          # delete each after pushing.
+          for attr in image standalone standalone-frontend standalone-slack standalone-full; do
+            if [ "$attr" = image ]; then img="${IMAGE}"; else img="${IMAGE}-${attr}"; fi
+            nix build ".#${attr}" --print-build-logs
+            ./result > /tmp/nanocodex-image.tar
+            nix run nixpkgs#skopeo -- --registries-conf /tmp/registries.conf \
+              copy --insecure-policy \
+              --dest-creds "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" \
+              docker-archive:/tmp/nanocodex-image.tar \
+              "docker://${img}:${{ github.sha }}-${{ matrix.arch }}"
+            rm -f /tmp/nanocodex-image.tar
+            df -h /
+          done
 
   manifest:
     needs: build
@@ -94,16 +97,22 @@ jobs:
             tags="latest ${{ github.sha }}"
           fi
           echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
-          for tag in $tags; do
-            podman manifest create "${IMAGE}:${tag}"
-            podman manifest add "${IMAGE}:${tag}" "docker://${IMAGE}:${{ github.sha }}-amd64"
-            podman manifest add "${IMAGE}:${tag}" "docker://${IMAGE}:${{ github.sha }}-arm64"
-            podman manifest push --all "${IMAGE}:${tag}" "docker://${IMAGE}:${tag}"
+          for suffix in "" -standalone -standalone-frontend -standalone-slack -standalone-full; do
+            for tag in $tags; do
+              podman manifest create "${IMAGE}${suffix}:${tag}"
+              podman manifest add "${IMAGE}${suffix}:${tag}" "docker://${IMAGE}${suffix}:${{ github.sha }}-amd64"
+              podman manifest add "${IMAGE}${suffix}:${tag}" "docker://${IMAGE}${suffix}:${{ github.sha }}-arm64"
+              podman manifest push --all "${IMAGE}${suffix}:${tag}" "docker://${IMAGE}${suffix}:${tag}"
+            done
           done
 
-  # Language-toolbox variant: the just-pushed base image + the WASM engines
-  # from languages/ (Dockerfile.languages). A plain docker build — the layer
-  # only adds /opt/languages assets, no nix involved.
+  # Language-toolbox variants: just-pushed images + the WASM engines from
+  # languages/ (Dockerfile.languages). Plain docker builds — the layer only
+  # adds /opt/languages assets, no nix involved. Two flavors:
+  #   nanocodex-languages            — the plain base + engines
+  #   nanocodex-standalone-languages — standalone-frontend + engines, with
+  #                                    NANOCODEX_SANDBOX=languages baked so
+  #                                    the in-container bridge enables them
   build-languages:
     needs: build
     strategy:
@@ -127,6 +136,11 @@ jobs:
             --build-arg BASE_IMAGE="${IMAGE}:${{ github.sha }}-${{ matrix.arch }}" \
             -t "${IMAGE}-languages:${{ github.sha }}-${{ matrix.arch }}" .
           docker push "${IMAGE}-languages:${{ github.sha }}-${{ matrix.arch }}"
+          docker build -f Dockerfile.languages \
+            --build-arg BASE_IMAGE="${IMAGE}-standalone-frontend:${{ github.sha }}-${{ matrix.arch }}" \
+            --build-arg SANDBOX_PRESET=languages \
+            -t "${IMAGE}-standalone-languages:${{ github.sha }}-${{ matrix.arch }}" .
+          docker push "${IMAGE}-standalone-languages:${{ github.sha }}-${{ matrix.arch }}"
 
   manifest-languages:
     needs: build-languages
@@ -140,11 +154,13 @@ jobs:
             tags="latest ${{ github.sha }}"
           fi
           echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
-          for tag in $tags; do
-            podman manifest create "${IMAGE}-languages:${tag}"
-            podman manifest add "${IMAGE}-languages:${tag}" "docker://${IMAGE}-languages:${{ github.sha }}-amd64"
-            podman manifest add "${IMAGE}-languages:${tag}" "docker://${IMAGE}-languages:${{ github.sha }}-arm64"
-            podman manifest push --all "${IMAGE}-languages:${tag}" "docker://${IMAGE}-languages:${tag}"
+          for suffix in -languages -standalone-languages; do
+            for tag in $tags; do
+              podman manifest create "${IMAGE}${suffix}:${tag}"
+              podman manifest add "${IMAGE}${suffix}:${tag}" "docker://${IMAGE}${suffix}:${{ github.sha }}-amd64"
+              podman manifest add "${IMAGE}${suffix}:${tag}" "docker://${IMAGE}${suffix}:${{ github.sha }}-arm64"
+              podman manifest push --all "${IMAGE}${suffix}:${tag}" "docker://${IMAGE}${suffix}:${tag}"
+            done
           done
 
   # Sticky PR comment with the pullable image references (updated in place on
@@ -163,18 +179,17 @@ jobs:
             const pr = context.issue.number;
             const sha = context.sha; // the PR's merge commit — what the jobs built
             const base = `ghcr.io/${context.repo.owner}/${context.repo.repo}`;
+            const suffixes = ["", "-languages", "-standalone", "-standalone-frontend", "-standalone-slack", "-standalone-full", "-standalone-languages"];
             const body = [
               marker,
               "### 📦 PR image builds",
               "",
               "| image | tags |",
               "|---|---|",
-              `| \`${base}\` | \`pr-${pr}\`, \`${sha}\` |`,
-              `| \`${base}-languages\` | \`pr-${pr}\`, \`${sha}\` |`,
+              ...suffixes.map((s) => `| \`${base}${s}\` | \`pr-${pr}\`, \`${sha}\` |`),
               "",
               "```bash",
-              `docker pull ${base}:pr-${pr}`,
-              `docker pull ${base}-languages:pr-${pr}`,
+              ...suffixes.map((s) => `docker pull ${base}${s}:pr-${pr}`),
               "```",
               "",
               `Multi-arch (amd64/arm64). \`pr-${pr}\` tracks the latest push to this PR; the sha tag is immutable (built from the merge commit).`,

@@ -199,6 +199,43 @@ languages thread the model loads the helpers with
 `(0,eval)(await fs.readFile('/opt/languages/bootstrap.js'))`. Unset (or
 `default`), the bridge behaves exactly as before.
 
+### Standalone deployment mode (one container, supervisord)
+
+The compose topology collapsed into a single container: `flake.nix` builds
+supervisord images that run every process side by side, with MinIO replaced
+by directory-backed stores (`--heap-store dir` / `--fs-store dir`) under
+`/data`. mcp-v8 refuses node-local dir stores in cluster mode, so the
+standalone mcp-v8 is a plain single-node stateful server (no Raft); the
+AG-UI bridge's per-thread stdio sandboxes already use dir stores, and all
+processes share the container filesystem.
+
+| image (`ghcr.io/r33drichards/…`) | processes | ports |
+|---|---|---|
+| `nanocodex-standalone` | mcp-v8 + codex | 4500, 8080 |
+| `nanocodex-standalone-frontend` | + AG-UI bridge + Next.js UI | + 8130, 3000 |
+| `nanocodex-standalone-slack` | + AG-UI bridge + Slack bot | + 8130 |
+| `nanocodex-standalone-full` | + bridge + UI + Slack bot | + 8130, 3000 |
+| `nanocodex-standalone-languages` | standalone-frontend + `/opt/languages` engines, `NANOCODEX_SANDBOX=languages` baked | + 8130, 3000 |
+
+```bash
+nix build .#standalone            # also: standalone-frontend/-slack/-full
+docker run -d \
+  -e AZURE_OPENAI_API_KEY=... \
+  -v ./secrets/ws-token:/run/secrets/ws_token:ro \
+  -v nanocodex-data:/data -v nanocodex-tmp:/tmp \
+  -v codex-sqlite:/codex-home/sqlite -v codex-sessions:/codex-home/sessions \
+  -p 4500:4500 -p 3000:3000 -p 8130:8130 \
+  ghcr.io/r33drichards/nanocodex-standalone-frontend
+```
+
+Notes: the Slack variants additionally need `-e SLACK_BOT_TOKEN=... -e
+SLACK_APP_TOKEN=...`. The frontend bakes the bridge origin at build time
+(`NEXT_PUBLIC_BRIDGE_URL`, default `http://127.0.0.1:8130`) — the browser
+calls the bridge directly, so publish 8130 on the same host, or rebuild the
+flake with a different URL for remote hosts. `nanocodex-standalone-languages`
+is `Dockerfile.languages` built with
+`--build-arg BASE_IMAGE=…-standalone-frontend --build-arg SANDBOX_PRESET=languages`.
+
 ### Naive passthrough & custom per-thread policies
 
 The `sandbox` field is a layered passthrough to that `mcp_servers.js` config,
