@@ -17,10 +17,10 @@ First run prompts for the program URL(s), the output store, interval, and
 timeout, and saves them to `.poll`, so reboots are free. This is how you
 bootstrap a computer you have no console access to and then never type again.
 
-The full harness is in `assets/startup.lua` — deploy it verbatim. (In this
-image the assets are not bundled — fetch the harness from the paste store, or
-reconstruct it from the run-with-timeout pattern below.) The rest of this doc
-is when and why.
+The full harness is bundled at `assets/startup.lua` — deploy it verbatim (it
+is also live on the paste store at `/startup`, so a fresh computer can
+`wget https://paste-production.up.railway.app/startup?b startup` directly).
+The rest of this doc is when and why; read the asset for the exact code.
 
 ## The store: one MUTABLE paste service for both program and output
 
@@ -91,9 +91,10 @@ The consequence for the **program you host** is the important part:
   not `error`, so a transient hiccup shows up as readable status rather than an
   `ERROR:` stack every loop.
 
-`assets/kelp-refiner.lua` is a worked example — a crafty turtle that drains a
-smoker, crafts dried kelp into blocks, and refuels/stores — written to this
-contract (one pass, one status line, soft failure).
+`assets/corner.lua` is a worked example — the box-mine GPS corner reporter
+(also live at `/corner` on the store): each run it reads its own gps position
+and publishes an `x y z` line to a slot named after the computer's label —
+written to this contract (one pass, one status line, soft failure).
 
 ## Deploying the `paste` store on Railway
 
@@ -149,5 +150,7 @@ Edit a slot in place (`PUT` the same id) and the running loop hot-reloads it.
 
 ## Bundled files
 
-- `assets/startup.lua` — the harness. Serve it at a raw URL and `wget` it once.
-- `assets/kelp-refiner.lua` — example single-pass polled program.
+- `assets/startup.lua` — the harness. Serve it at a raw URL and `wget` it
+  once (live copy: `https://paste-production.up.railway.app/startup`).
+- `assets/corner.lua` — example single-pass polled program (live copy:
+  `https://paste-production.up.railway.app/corner`).
