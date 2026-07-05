@@ -251,7 +251,7 @@ threads stay stateful and isolated; state semantics (heap persistence, /work)
 are whatever the remote server was started with. The frontend is built
 same-origin (`NEXT_PUBLIC_BRIDGE_URL=""`): the browser's `/agui/...` calls
 hit the next server, which proxies them to the in-container bridge
-(`BRIDGE_PROXY_TARGET` rewrite, set by supervisord) — publishing port 3000
+(`BRIDGE_PROXY_TARGET` rewrite, baked at build time) — publishing port 3000
 alone is enough on any host; 8130 is only for direct bridge access.
 `nanocodex-standalone-languages`
 is `Dockerfile.languages` built with
