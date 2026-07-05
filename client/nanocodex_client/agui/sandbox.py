@@ -61,24 +61,23 @@ SKILLS_DIR = "/codex-home/skills"
 # helper call so the model knows how to invoke each after loading bootstrap.js.
 _WASM_MODULES = [
     ("picat", "/opt/languages/picat.wasm", "512m",
-     "Picat logic/constraint language. In run_js after "
-     "(0,eval)(await fs.readFile('/opt/languages/bootstrap.js','utf8')): "
+     "Picat logic/constraint language. In ONE run_js call, first (0,eval) bootstrap.js then "
      "await picat(code, args?) -> {stdout, stderr, exitCode}."),
     ("tla", "/opt/languages/tla_checker.wasm", "512m",
-     "TLA+ model checker. In run_js after loading bootstrap.js: "
+     "TLA+ model checker. In ONE run_js call, first (0,eval) bootstrap.js then "
      "await tlaplus(spec, opts?) (inline '---- CONFIG ----' supported)."),
     ("minizinc", "/opt/languages/minizinc.wasm", "1g",
-     "MiniZinc constraint solver. In run_js after loading bootstrap.js: "
+     "MiniZinc constraint solver. In ONE run_js call, first (0,eval) bootstrap.js then "
      "await minizinc(model, {data?, args?}?) -> {status, solutions, ...}."),
     ("autolisp", "/opt/languages/acadlisp.wasm", "512m",
-     "AutoLISP interpreter. In run_js after loading bootstrap.js: "
+     "AutoLISP interpreter. In ONE run_js call, first (0,eval) bootstrap.js then "
      "await autolisp(code) -> {result, output, svg}."),
     ("lua", "/opt/languages/lua.wasm", "512m",
-     "Lua 5.4 VM. In run_js after loading bootstrap.js: "
+     "Lua 5.4 VM. In ONE run_js call, first (0,eval) bootstrap.js then "
      "await lua(code, opts?) -> {result, stdout, error}."),
     ("craftos", "/opt/languages/craftos.wasm", "512m",
      "ComputerCraft/CC:Tweaked emulator (networked computers + turtles). In "
-     "run_js after loading bootstrap.js: await craftos({timeout_ms?, nodes:["
+     "ONE run_js call, first (0,eval) bootstrap.js then await craftos({timeout_ms?, nodes:["
      "{program, label?, collect?:true, position?, world?}]}) -> {net, nodes:["
      "{label, id, output, turtle}]}. A node's `output` is only what its program "
      "passes to emit(...); print() is NOT captured; call done() to finish. See "
@@ -102,35 +101,48 @@ LANGUAGES_INSTRUCTIONS = (
     "\n\nThis thread's run_js sandbox additionally has a persistent per-thread "
     "filesystem at /work (await fs.writeFile('/work/x'), fs.readFile, "
     "fs.readdir, ...) that survives across run_js calls, and bundled WASM "
-    "language engines. Load the language helpers once per run with "
-    "(0,eval)(await fs.readFile('/opt/languages/bootstrap.js')) which defines "
-    "picat, tlaplus, minizinc, autolisp, lua, craftos, jsx, markdown, and "
-    "mermaid. Each engine is also listed as a `runjs__wasm__<name>` tool whose "
-    "description carries its exact call signature; the loaded bootstrap also "
-    "returns a `__LANG.helpers` map documenting every signature. NOTE on "
-    "craftos (ComputerCraft): call craftos({nodes:[{program, collect:true}]}); "
-    "a node's returned `output` is ONLY what its Lua passes to emit(...) — "
-    "print() is NOT captured — and end multi-line programs with done(). "
-    "V8 heap persistence is disabled on this thread (heap snapshots "
-    "and WASM modules are mutually exclusive in mcp-v8) — persist cross-call "
-    "state in /work instead."
+    "language engines (picat, tlaplus, minizinc, autolisp, lua, craftos, jsx, "
+    "markdown, mermaid), each also a `runjs__wasm__<name>` tool whose "
+    "description carries its call signature.\n"
+    "CRITICAL: every run_js call runs in a FRESH V8 isolate — loaded helpers do "
+    "NOT persist between calls (only /work does). So load the bootstrap AND "
+    "call the engine IN THE SAME run_js code block, e.g. as ONE call:\n"
+    "  (0,eval)(await fs.readFile('/opt/languages/bootstrap.js','utf8'));\n"
+    "  const out = await craftos({nodes:[{label:'c1', collect:true, "
+    "program:\"emit('hello') emit(2+3) done()\"}]});\n"
+    "  console.log(JSON.stringify(out));\n"
+    "NOTE on craftos (ComputerCraft): a node's returned `output` is ONLY what "
+    "its Lua passes to emit(...) — print() is NOT captured — and end multi-line "
+    "programs with done(). Other helpers: await picat(code)/lua(code)/"
+    "minizinc(model)/tlaplus(spec)/autolisp(code); the loaded bootstrap returns "
+    "a __LANG.helpers map of every signature. V8 heap persistence is disabled "
+    "on this thread (heap snapshots and WASM modules are mutually exclusive in "
+    "mcp-v8) — persist cross-call state in /work."
 )
 
 
 # Appended on a `skills` instance: languages capabilities on the real fs,
 # plus self-editable codex skills.
 SKILLS_INSTRUCTIONS = (
-    "\n\nThis thread's run_js sandbox has the bundled WASM language engines "
-    "(load once per run with "
-    "(0,eval)(await fs.readFile('/opt/languages/bootstrap.js')) which defines "
-    "picat, tlaplus, minizinc, autolisp, lua, craftos, jsx, markdown, and "
-    "mermaid; each is also a `runjs__wasm__<name>` tool whose description "
-    "carries its call signature, and the loaded bootstrap returns a "
-    "`__LANG.helpers` map of every signature). NOTE on craftos "
-    "(ComputerCraft): call craftos({nodes:[{program, collect:true}]}); a "
-    "node's returned `output` is ONLY what its Lua passes to emit(...) — "
-    "print() is NOT captured — and end multi-line programs with done(); see "
-    "the craftos-sim skill for the full API. Threads also get REAL filesystem "
+    "\n\nThis thread's run_js sandbox has bundled WASM language engines "
+    "(picat, tlaplus, minizinc, autolisp, lua, craftos, jsx, markdown, "
+    "mermaid), each also listed as a `runjs__wasm__<name>` tool whose "
+    "description carries its call signature.\n"
+    "CRITICAL: every run_js call runs in a FRESH V8 isolate — NOTHING persists "
+    "between calls (no variables, no loaded helpers). So you MUST load the "
+    "bootstrap AND call the engine IN THE SAME run_js code block. Loading it in "
+    "a separate call does nothing (you'll get 'craftos is not defined'). "
+    "Template — run this as ONE run_js call:\n"
+    "  (0,eval)(await fs.readFile('/opt/languages/bootstrap.js','utf8'));\n"
+    "  const out = await craftos({nodes:[{label:'c1', collect:true, "
+    "program:\"emit('hello') emit(2+3) done()\"}]});\n"
+    "  console.log(JSON.stringify(out));\n"
+    "NOTE on craftos (ComputerCraft): a node's returned `output` is ONLY what "
+    "its Lua passes to emit(...) — print() is NOT captured — and end multi-line "
+    "programs with done(); see the craftos-sim skill for the full node/turtle/"
+    "GPS API. The other helpers: await picat(code)/lua(code)/minizinc(model)/"
+    "tlaplus(spec)/autolisp(code) (loaded bootstrap returns a __LANG.helpers "
+    "map of every signature). Threads also get REAL filesystem "
     "access to two writable areas: /work — a "
     "persistent scratch space shared by all threads (namespace your files) — "
     "and /codex-home/skills — this agent's own skill library. Each skill is "
