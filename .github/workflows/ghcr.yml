@@ -56,6 +56,8 @@ jobs:
               - 'slackbot/**'
             languages:
               - 'languages/**'
+            browser:
+              - 'browser-mcp-server/**'
 
       - name: plan builds
         id: plan
@@ -65,9 +67,10 @@ jobs:
           FRONTEND: ${{ steps.filter.outputs.frontend }}
           SLACKBOT: ${{ steps.filter.outputs.slackbot }}
           LANGUAGES: ${{ steps.filter.outputs.languages }}
+          BROWSER: ${{ steps.filter.outputs.browser }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            CORE=true CLIENT=true FRONTEND=true SLACKBOT=true LANGUAGES=true
+            CORE=true CLIENT=true FRONTEND=true SLACKBOT=true LANGUAGES=true BROWSER=true
           fi
           # attr -> rebuild condition (rootfs/flake feed everything; the
           # bridge (client/) is in every supervisord image; frontend,
@@ -78,6 +81,7 @@ jobs:
           [ "$FRONTEND" = true ] && for a in standalone-frontend standalone-full standalone-languages; do want[$a]=1; done
           [ "$SLACKBOT" = true ] && for a in standalone-slack standalone-full slack-remote; do want[$a]=1; done
           [ "$LANGUAGES" = true ] && for a in languages standalone-languages; do want[$a]=1; done
+          [ "$BROWSER" = true ] && for a in languages standalone-languages; do want[$a]=1; done
           attrs=$(for a in image languages standalone standalone-frontend standalone-slack standalone-full slack-remote standalone-languages; do
             [ -n "${want[$a]:-}" ] && echo "$a"; done | jq -R . | jq -sc .)
           echo "attrs=$attrs" | tee -a "$GITHUB_OUTPUT"

@@ -27,7 +27,7 @@ from .mapper import (
     thread_summaries,
     thread_to_agui_messages,
 )
-from .sandbox import instructions_for, sandbox_for
+from .sandbox import extra_mcp_servers_for, instructions_for, sandbox_for
 from .threads import ThreadStore
 from .ui_tools import ui_mcp_server
 
@@ -228,8 +228,13 @@ async def _resolve_or_create(nc: Nanocodex, agui_thread_id: str, approvals: bool
         sandbox=sandbox_for(sid, approvals), cwd="/tmp",
         developer_instructions=instructions_for(NANOCODEX_INSTRUCTIONS),
         # Generative UI: the `ui` MCP server's render_* tools are no-op acks
-        # whose ARGUMENTS the frontend renders (see agui/ui_tools.py).
-        extra_mcp_servers={"ui": ui_mcp_server("prompt" if approvals else "approve")},
+        # whose ARGUMENTS the frontend renders (see agui/ui_tools.py). The
+        # languages/skills presets additionally get the baked-in `browser`
+        # headless-Chromium MCP server.
+        extra_mcp_servers={
+            "ui": ui_mcp_server("prompt" if approvals else "approve"),
+            **extra_mcp_servers_for(approvals),
+        },
     )
     codex_tid = resp["thread"]["id"]
     store.bind(agui_thread_id, codex_tid, sid)

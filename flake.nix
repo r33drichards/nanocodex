@@ -315,6 +315,32 @@
             cp -r ${./languages/skills} $out/codex-home/skills
           '';
 
+          # ── /opt/browser: headless-Chromium browser MCP server ──────────
+          # Ported from NanoClaw's browser-mcp-server (trycua/cloud
+          # nixos/alertmanager/nanoclaw). Ships with the languages images
+          # only; the AG-UI bridge declares it per thread as the `browser`
+          # stdio MCP server next to `js` (see client agui/sandbox.py).
+          # importNpmLock fetches each dependency by the lockfile's own
+          # integrity hash — no npmDepsHash to maintain.
+          browserNodeModules = pkgsTools.importNpmLock.buildNodeModules {
+            npmRoot = ./browser-mcp-server;
+            nodejs = pkgsTools.nodejs_22;
+          };
+          # Chromium renders tofu without a fontconfig; point the default
+          # /etc/fonts/fonts.conf at a DejaVu-only setup.
+          browserFontsConf = pkgsTools.makeFontsConf {
+            fontDirectories = [ pkgsTools.dejavu_fonts ];
+          };
+          browserOpt = pkgs.runCommand "nanocodex-browser-opt" { } ''
+            mkdir -p $out/opt/browser $out/usr/bin $out/etc/fonts
+            cp ${./browser-mcp-server/server.js} $out/opt/browser/server.js
+            cp ${./browser-mcp-server/package.json} $out/opt/browser/package.json
+            ln -s ${browserNodeModules}/node_modules $out/opt/browser/node_modules
+            # Stable path for the sandbox declaration's CHROMIUM_PATH.
+            ln -s ${pkgsTools.chromium}/bin/chromium $out/usr/bin/chromium
+            ln -s ${browserFontsConf} $out/etc/fonts/fonts.conf
+          '';
+
           mkSupervisordConf = programs: pkgs.writeTextDir "etc/supervisord.conf" (''
             [supervisord]
             nodaemon=true
@@ -477,7 +503,7 @@
           standaloneLanguagesImage = mkStandaloneImage {
             name = "ghcr.io/r33drichards/nanocodex-standalone-languages";
             programs = [ mcpV8Program codexProgram bridgeProgram frontendProgram ];
-            extraContents = [ pkgsTools.nodejs_22 languagesOpt ];
+            extraContents = [ pkgsTools.nodejs_22 languagesOpt browserOpt ];
             extraPorts = [ 8130 3000 ];
             extraFakeRoot = bridgeFakeRoot + frontendFakeRoot;
             extraEnv = [ "NANOCODEX_SANDBOX=skills" ];
@@ -518,13 +544,17 @@
           };
 
           # The base runtime + the WASM language engines at /opt/languages
-          # (formerly Dockerfile.languages; now pure nix via languagesOpt).
+          # (formerly Dockerfile.languages; now pure nix via languagesOpt)
+          # + Chromium and the browser MCP server at /opt/browser (nodejs is
+          # needed to run it — the bridge spawns /bin/node per thread).
           languagesImage = pkgs.dockerTools.streamLayeredImage {
             name = "ghcr.io/r33drichards/nanocodex-languages";
             tag = "latest";
             contents = [
               rootfs
               languagesOpt
+              browserOpt
+              pkgsTools.nodejs_22
               pkgs.cacert
               pkgs.bashInteractive
               pkgs.coreutils

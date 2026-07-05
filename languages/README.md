@@ -15,6 +15,11 @@ runtimes onto the base nanocodex image at `/opt/languages/`:
 plus pure-JS helpers loaded by `bootstrap.js`: jsx (babel + react SSR),
 markdown (marked), mermaid (parse/validate).
 
+The languages images also carry headless Chromium and the browser automation
+MCP server at `/opt/browser/` (see `browser-mcp-server/` at the repo root) —
+declared per thread as the `browser` stdio MCP server next to `js` on the
+`languages`/`skills` presets.
+
 ## Provenance
 
 Vendored from `r33drichards/open-agents` `deploy/mcp-js/` (which is itself the

@@ -54,6 +54,16 @@ SKILLS_POLICIES_JSON = "/opt/languages/policies-skills.json"
 LANGUAGES_BOOTSTRAP = "/opt/languages/bootstrap.js"
 SKILLS_DIR = "/codex-home/skills"
 
+# The browser MCP server baked into the languages images (flake.nix
+# browserOpt): headless-Chromium automation (ported from NanoClaw's
+# browser-mcp-server), spawned per thread as a stdio server alongside `js`.
+BROWSER_SERVER_JS = "/opt/browser/server.js"
+BROWSER_CHROMIUM_PATH = "/usr/bin/chromium"
+# Outputs land under /work so the js sandbox can read them back: real fs on
+# `skills`, and via --fs-passthrough on `languages` (writes to the real fs by
+# an external process are visible to passthrough reads).
+BROWSER_OUTPUT_DIR = "/work/browser"
+
 # name=path:memory-cap, mirroring the mcp-js toolbox image's --wasm-module set.
 _WASM_MODULES = [
     ("picat", "/opt/languages/picat.wasm", "512m"),
@@ -63,6 +73,16 @@ _WASM_MODULES = [
     ("lua", "/opt/languages/lua.wasm", "512m"),
     ("craftos", "/opt/languages/craftos.wasm", "512m"),
 ]
+
+# Appended after LANGUAGES_INSTRUCTIONS / SKILLS_INSTRUCTIONS: both presets
+# run a languages image, which also bakes the browser MCP server.
+BROWSER_INSTRUCTIONS = (
+    "\n\nThis thread also has a `browser` MCP tool: browser_execute runs a "
+    "pipeline of headless-Chromium operations (setViewport, navigate, "
+    "setContent, wait, screenshot, pdf, evaluate, click, type, select). "
+    "Screenshots and PDFs are saved under /work/browser and the tool returns "
+    "their paths; the run_js filesystem can read them back."
+)
 
 # Appended to the thread's developer instructions on a languages instance, so
 # the model knows the extra capabilities exist (the base instructions
@@ -114,6 +134,33 @@ def sandbox_preset() -> str:
 def languages_enabled() -> bool:
     """Whether this deployment runs the nanocodex-languages image."""
     return sandbox_preset() == "languages"
+
+
+def browser_mcp_server(tools_approval: str = "approve") -> dict:
+    """The `browser` entry for a thread's `mcp_servers` config (alongside
+    `js`): the baked-in browser-mcp-server/server.js over stdio. Each tool
+    call launches and closes its own Chromium, so per-thread processes share
+    nothing but the output directory."""
+    return {
+        "command": "/bin/node",
+        "args": [BROWSER_SERVER_JS],
+        "env": {
+            "CHROMIUM_PATH": BROWSER_CHROMIUM_PATH,
+            "BROWSER_OUTPUT_DIR": BROWSER_OUTPUT_DIR,
+        },
+        "startup_timeout_sec": 30,
+        "tool_timeout_sec": 180,
+        "default_tools_approval_mode": tools_approval,
+    }
+
+
+def extra_mcp_servers_for(approvals: bool = False) -> dict:
+    """Per-thread MCP servers implied by this deployment's preset, beyond the
+    `js` sandbox: the languages images (presets `languages` and `skills`) bake
+    Chromium + the browser MCP server; the base and remote images don't."""
+    if sandbox_preset() in ("languages", "skills"):
+        return {"browser": browser_mcp_server("prompt" if approvals else "approve")}
+    return {}
 
 
 def _remote_server(session_id: str, approvals: bool) -> dict:
@@ -202,7 +249,7 @@ def instructions_for(base_instructions: str, languages: bool | None = None) -> s
     else:
         preset = "languages" if languages else "default"
     if preset == "languages":
-        return base_instructions + LANGUAGES_INSTRUCTIONS
+        return base_instructions + LANGUAGES_INSTRUCTIONS + BROWSER_INSTRUCTIONS
     if preset == "skills":
-        return base_instructions + SKILLS_INSTRUCTIONS
+        return base_instructions + SKILLS_INSTRUCTIONS + BROWSER_INSTRUCTIONS
     return base_instructions
