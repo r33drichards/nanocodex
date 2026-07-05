@@ -146,6 +146,8 @@ jobs:
           docker build -f Dockerfile.languages \
             --build-arg BASE_IMAGE="${IMAGE}-standalone-frontend:${{ github.sha }}-${{ matrix.arch }}" \
             --build-arg SANDBOX_PRESET=languages \
+            --build-arg MODEL_PROVIDER=ollama-cloud \
+            --build-arg MODEL=glm-5.2 \
             -t "${IMAGE}-standalone-languages:${{ github.sha }}-${{ matrix.arch }}" .
           docker push "${IMAGE}-standalone-languages:${{ github.sha }}-${{ matrix.arch }}"
 

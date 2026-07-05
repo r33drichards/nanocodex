@@ -245,10 +245,16 @@
             priority = 10;
             command = "/usr/local/bin/mcp-v8 --http-port 8080 --bind-host 0.0.0.0 --heap-store dir --heap-dir /data/heaps --fs-store dir --fs-dir /data/fs --session-db-path /data/sessions --policies-json /app/policies/policies.json";
           };
+          # Provider/model are runtime env config on the supervisord images:
+          # python-supervisor expands %(ENV_*)s at startup, and codex parses
+          # a non-TOML `-c` value as a literal string. Defaults (azure /
+          # gpt-5.4, matching config.toml) are baked into the image Env below;
+          # override with `docker run -e NANOCODEX_MODEL_PROVIDER=ollama-cloud
+          # -e NANOCODEX_MODEL=glm-5.2` (provider must exist in config.toml).
           codexProgram = {
             name = "codex";
             priority = 20;
-            command = "/usr/local/bin/codex-app-server --listen ws://0.0.0.0:4500 --ws-auth capability-token --ws-token-file /run/secrets/ws_token";
+            command = "/usr/local/bin/codex-app-server --listen ws://0.0.0.0:4500 --ws-auth capability-token --ws-token-file /run/secrets/ws_token -c model_provider=%(ENV_NANOCODEX_MODEL_PROVIDER)s -c model=%(ENV_NANOCODEX_MODEL)s";
           };
           # directory=/app so the client's walk-up token search finds the
           # baked /app/secrets/ws-token -> /run/secrets/ws_token symlink.
@@ -316,6 +322,10 @@
                   "PATH=/usr/local/bin:/bin"
                   "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
                   "NIX_SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
+                  # Consumed by codexProgram's %(ENV_*)s -c overrides; must
+                  # exist or supervisord fails conf expansion at startup.
+                  "NANOCODEX_MODEL_PROVIDER=azure"
+                  "NANOCODEX_MODEL=gpt-5.4"
                 ] ++ extraEnv;
                 ExposedPorts = builtins.listToAttrs
                   (map (p: { name = "${toString p}/tcp"; value = { }; }) (basePorts ++ extraPorts));

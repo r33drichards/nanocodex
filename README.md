@@ -229,6 +229,17 @@ docker run -d \
   ghcr.io/r33drichards/nanocodex-standalone-frontend
 ```
 
+**Model provider (standalone images):** provider/model are runtime env
+config — supervisord expands them into `-c model_provider=... -c model=...`
+at codex startup. Defaults: azure + gpt-5.4, except
+`nanocodex-standalone-languages` which defaults to **Ollama Cloud + glm-5.2**
+(`-e OLLAMA_API_KEY=...` required). Override anywhere with
+`-e NANOCODEX_MODEL_PROVIDER=... -e NANOCODEX_MODEL=...`; the provider id
+must exist in `codex-home/config.toml` (`azure`, `openai-api-key`,
+`ollama-cloud`) or be a codex built-in. Ollama Cloud is served via the
+Responses wire API (`https://ollama.com/v1`) — this codex fork does not
+speak chat-completions.
+
 Notes: the Slack variants additionally need `-e SLACK_BOT_TOKEN=... -e
 SLACK_APP_TOKEN=...`. `nanocodex-slack-remote` runs no mcp-v8 at all: the
 bridge is baked with `NANOCODEX_SANDBOX=remote` and declares each thread's
