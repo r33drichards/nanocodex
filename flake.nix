@@ -292,7 +292,7 @@
             ln -sf /run/secrets/ws_token app/secrets/ws-token
           '';
 
-          mkStandaloneImage = { name, programs, extraContents ? [ ], extraPorts ? [ ], extraFakeRoot ? "" }:
+          mkStandaloneImage = { name, programs, extraContents ? [ ], basePorts ? [ 4500 8080 ], extraPorts ? [ ], extraFakeRoot ? "", extraEnv ? [ ] }:
             pkgs.dockerTools.streamLayeredImage {
               inherit name;
               tag = "latest";
@@ -316,9 +316,9 @@
                   "PATH=/usr/local/bin:/bin"
                   "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
                   "NIX_SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
-                ];
+                ] ++ extraEnv;
                 ExposedPorts = builtins.listToAttrs
-                  (map (p: { name = "${toString p}/tcp"; value = { }; }) ([ 4500 8080 ] ++ extraPorts));
+                  (map (p: { name = "${toString p}/tcp"; value = { }; }) (basePorts ++ extraPorts));
                 Volumes."/data" = { };
               };
             };
@@ -342,6 +342,21 @@
             extraContents = [ pkgsTools.nodejs_22 ];
             extraPorts = [ 8130 ];
             extraFakeRoot = bridgeFakeRoot + slackbotFakeRoot;
+          };
+          # No local mcp-v8: the bridge declares each thread's sandbox as a
+          # streamable-HTTP mcp server on a REMOTE mcp-v8 instance
+          # (NANOCODEX_SANDBOX=remote baked; set NANOCODEX_MCP_V8_URL at run,
+          # e.g. http://mcp-v8-host:8080/mcp — nanocodex-standalone's :8080
+          # works as that remote). Threads stay stateful+isolated via the
+          # X-MCP-Session-Id header, see client agui/sandbox.py.
+          slackRemoteImage = mkStandaloneImage {
+            name = "ghcr.io/r33drichards/nanocodex-slack-remote";
+            programs = [ codexProgram bridgeProgram slackbotProgram ];
+            extraContents = [ pkgsTools.nodejs_22 ];
+            basePorts = [ 4500 ];
+            extraPorts = [ 8130 ];
+            extraFakeRoot = bridgeFakeRoot + slackbotFakeRoot;
+            extraEnv = [ "NANOCODEX_SANDBOX=remote" ];
           };
           standaloneFullImage = mkStandaloneImage {
             name = "ghcr.io/r33drichards/nanocodex-standalone-full";
@@ -391,6 +406,7 @@
           standalone-frontend = standaloneFrontendImage;
           standalone-slack = standaloneSlackImage;
           standalone-full = standaloneFullImage;
+          slack-remote = slackRemoteImage;
           default = image;
         };
     in

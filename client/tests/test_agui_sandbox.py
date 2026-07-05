@@ -6,21 +6,26 @@ import unittest
 
 from nanocodex_client.agui.sandbox import (
     LANGUAGES_INSTRUCTIONS,
+    REMOTE_URL_ENV,
     instructions_for,
     languages_enabled,
     sandbox_for,
+    sandbox_preset,
 )
+
+_ENV_KEYS = ("NANOCODEX_SANDBOX", REMOTE_URL_ENV)
 
 
 class _EnvMixin(unittest.TestCase):
     def setUp(self):
-        self._saved = os.environ.pop("NANOCODEX_SANDBOX", None)
+        self._saved = {k: os.environ.pop(k, None) for k in _ENV_KEYS}
 
     def tearDown(self):
-        if self._saved is not None:
-            os.environ["NANOCODEX_SANDBOX"] = self._saved
-        else:
-            os.environ.pop("NANOCODEX_SANDBOX", None)
+        for k, v in self._saved.items():
+            if v is not None:
+                os.environ[k] = v
+            else:
+                os.environ.pop(k, None)
 
 
 class PresetEnvTest(_EnvMixin):
@@ -32,6 +37,9 @@ class PresetEnvTest(_EnvMixin):
         self.assertFalse(languages_enabled())
         os.environ["NANOCODEX_SANDBOX"] = "languages"
         self.assertTrue(languages_enabled())
+        os.environ["NANOCODEX_SANDBOX"] = "remote"
+        self.assertEqual(sandbox_preset(), "remote")
+        self.assertFalse(languages_enabled())
 
     def test_unknown_value_rejected(self):
         os.environ["NANOCODEX_SANDBOX"] = "nope"
@@ -72,6 +80,31 @@ class SandboxPresetTest(_EnvMixin):
         # The languages policy document (fetch allow-all + narrowed fs).
         pj = spec.args[spec.args.index("--policies-json") + 1]
         self.assertEqual(pj, "/opt/languages/policies.json")
+
+    def test_remote_preset_streamable_http_raw(self):
+        os.environ["NANOCODEX_SANDBOX"] = "remote"
+        os.environ[REMOTE_URL_ENV] = "http://mcp-v8.internal:8080/mcp"
+        spec = sandbox_for("sid-3")
+        # No local process: the raw declaration IS the mcp server.
+        self.assertIsNone(spec.args)
+        self.assertEqual(spec.raw["url"], "http://mcp-v8.internal:8080/mcp")
+        # Thread-stable session keying on the shared remote instance.
+        self.assertEqual(spec.raw["http_headers"], {"X-MCP-Session-Id": "sid-3"})
+        # raw bypasses to_config's defaults, so it must carry these itself.
+        self.assertEqual(spec.raw["default_tools_approval_mode"], "approve")
+        cfg = spec.to_config()
+        self.assertEqual(cfg["mcp_servers"]["js"], spec.raw)
+
+    def test_remote_preset_approvals(self):
+        os.environ["NANOCODEX_SANDBOX"] = "remote"
+        os.environ[REMOTE_URL_ENV] = "http://h:1/mcp"
+        spec = sandbox_for("s", approvals=True)
+        self.assertEqual(spec.raw["default_tools_approval_mode"], "prompt")
+
+    def test_remote_preset_requires_url(self):
+        os.environ["NANOCODEX_SANDBOX"] = "remote"
+        with self.assertRaises(ValueError):
+            sandbox_for("sid-4")
 
     def test_approvals_flag_maps_to_prompt(self):
         self.assertEqual(sandbox_for("s").tools_approval, "approve")

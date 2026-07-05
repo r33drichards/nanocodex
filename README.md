@@ -216,6 +216,7 @@ processes share the container filesystem.
 | `nanocodex-standalone-slack` | + Slack bot | |
 | `nanocodex-standalone-full` | + UI + Slack bot | + 3000 |
 | `nanocodex-standalone-languages` | standalone-frontend + `/opt/languages` engines, `NANOCODEX_SANDBOX=languages` baked | + 8130, 3000 |
+| `nanocodex-slack-remote` | codex + AG-UI bridge + Slack bot, **no local mcp-v8** — threads attach to a remote instance | 4500, 8130 |
 
 ```bash
 nix build .#standalone            # also: standalone-frontend/-slack/-full
@@ -229,7 +230,14 @@ docker run -d \
 ```
 
 Notes: the Slack variants additionally need `-e SLACK_BOT_TOKEN=... -e
-SLACK_APP_TOKEN=...`. The frontend bakes the bridge origin at build time
+SLACK_APP_TOKEN=...`. `nanocodex-slack-remote` runs no mcp-v8 at all: the
+bridge is baked with `NANOCODEX_SANDBOX=remote` and declares each thread's
+sandbox as a streamable-HTTP mcp server at `NANOCODEX_MCP_V8_URL` (run with
+`-e NANOCODEX_MCP_V8_URL=http://mcp-v8-host:8080/mcp`; a
+`nanocodex-standalone` instance's `:8080` works as that remote). Per-thread
+state is keyed on the remote server via the `X-MCP-Session-Id` header, so
+threads stay stateful and isolated; state semantics (heap persistence, /work)
+are whatever the remote server was started with. The frontend bakes the bridge origin at build time
 (`NEXT_PUBLIC_BRIDGE_URL`, default `http://127.0.0.1:8130`) — the browser
 calls the bridge directly, so publish 8130 on the same host, or rebuild the
 flake with a different URL for remote hosts. `nanocodex-standalone-languages`
