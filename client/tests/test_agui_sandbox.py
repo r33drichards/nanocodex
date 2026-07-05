@@ -96,6 +96,10 @@ class SandboxPresetTest(_EnvMixin):
         pj = spec.args[spec.args.index("--policies-json") + 1]
         self.assertEqual(pj, "/opt/languages/policies-skills.json")
         self.assertIn("sid-5", spec.args)  # --session-id value
+        # bootstrap.js (~7.4MB source) OOMs the default 8MB heap on eval, so
+        # the wasm presets must raise it well above the default.
+        hm = spec.args[spec.args.index("--heap-memory-max") + 1]
+        self.assertGreaterEqual(int(hm), 128)
 
     def test_skills_instructions_mention_skill_editing(self):
         os.environ["NANOCODEX_SANDBOX"] = "skills"

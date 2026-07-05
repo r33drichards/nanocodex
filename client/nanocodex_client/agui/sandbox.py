@@ -64,6 +64,16 @@ _WASM_MODULES = [
     ("craftos", "/opt/languages/craftos.wasm", "512m"),
 ]
 
+# V8 heap cap (MB) for the wasm presets. mcp-v8 defaults to 8MB, but
+# bootstrap.js is ~7.4MB of source: compiling it (parse + bytecode + the
+# helper closures it defines) needs many multiples of the source size, so an
+# 8MB heap OOMs the isolate on `(0,eval)(bootstrap.js)` and the execution dies
+# ("Transport closed"), making craftos/picat/etc. unreachable. 256MB gives
+# ample headroom for the compile and the engines' JS interop while staying
+# well under a typical container's RAM (wasm linear memory is separate native
+# memory, capped per-module above).
+_WASM_HEAP_MEMORY_MAX_MB = "256"
+
 # Appended to the thread's developer instructions on a languages instance, so
 # the model knows the extra capabilities exist (the base instructions
 # deliberately don't assert any).
@@ -166,6 +176,7 @@ def sandbox_for(session_id: str, approvals: bool = False, languages: bool | None
         # docstring). Policy: rw /work + rw /codex-home/skills, ro engines.
         args = [
             "--policies-json", SKILLS_POLICIES_JSON,
+            "--heap-memory-max", _WASM_HEAP_MEMORY_MAX_MB,
             "--session-id", session_id,
         ]
         for name, path, cap in _WASM_MODULES:
@@ -173,6 +184,7 @@ def sandbox_for(session_id: str, approvals: bool = False, languages: bool | None
     elif preset == "languages":
         args = [
             "--policies-json", LANGUAGES_POLICIES_JSON,
+            "--heap-memory-max", _WASM_HEAP_MEMORY_MAX_MB,
             "--fs-store", "dir",
             "--fs-dir", f"/tmp/agui-fs/{session_id}",
             "--fs-passthrough",
