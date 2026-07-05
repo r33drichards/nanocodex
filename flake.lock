@@ -3,11 +3,11 @@
     "codex-src": {
       "flake": false,
       "locked": {
-        "lastModified": 1783037666,
-        "narHash": "sha256-ugZDSAkCtS6pP0S8U/rwmysknpOS4pltnjAq41/MAu0=",
+        "lastModified": 1783268247,
+        "narHash": "sha256-4qaaj0puI4Wv1ezDnpGCAdnmWv3UmZhdMzR+TreLUEg=",
         "owner": "r33drichards",
         "repo": "codex",
-        "rev": "b18b4eeb5eb8ca8602c5418f5b863b480af1e47a",
+        "rev": "e5d0878ed8e1043402ed744b7e57ea7e0d2506aa",
         "type": "github"
       },
       "original": {
