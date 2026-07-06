@@ -19,6 +19,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from ..core import Nanocodex, RpcError
+from .jobs_tools import jobs_enabled, jobs_instructions, jobs_mcp_server
 from .mapper import (
     RunState,
     map_notification,
@@ -221,15 +222,32 @@ async def _resolve_or_create(nc: Nanocodex, agui_thread_id: str, approvals: bool
         return agui_thread_id
     except RpcError:
         pass
+    return await create_bridge_thread(nc, agui_thread_id, approvals)
+
+
+async def create_bridge_thread(nc: Nanocodex, agui_thread_id: str, approvals: bool) -> str:
+    """Create a codex thread wired the way this bridge wires every thread:
+    the deploy-time sandbox preset, the developer instructions (+ jobs
+    addendum), the `ui` render server, and the `jobs` scheduling server.
+    Binds agui_thread_id -> codex id and returns the codex id. Also used by
+    the jobs scheduler for isolated deliveries (agui/jobs.py)."""
     sid = ThreadStore.new_session_id()
+    mode = "prompt" if approvals else "approve"
+    instructions = instructions_for(NANOCODEX_INSTRUCTIONS)
+    # Generative UI: the `ui` MCP server's render_* tools are no-op acks
+    # whose ARGUMENTS the frontend renders (see agui/ui_tools.py).
+    extra = {"ui": ui_mcp_server(mode)}
+    if jobs_enabled():
+        # Background jobs (crons & monitors): real tools — calls land on this
+        # bridge's scheduler via /agui/jobs/rpc (see agui/jobs_tools.py).
+        extra["jobs"] = jobs_mcp_server(sid, agui_thread_id, mode)
+        instructions += jobs_instructions()
     # The sandbox preset (and instruction addendum) is deploy-time config —
     # NANOCODEX_SANDBOX matches the runtime image this instance runs.
     resp = await nc.create_thread(
         sandbox=sandbox_for(sid, approvals), cwd="/tmp",
-        developer_instructions=instructions_for(NANOCODEX_INSTRUCTIONS),
-        # Generative UI: the `ui` MCP server's render_* tools are no-op acks
-        # whose ARGUMENTS the frontend renders (see agui/ui_tools.py).
-        extra_mcp_servers={"ui": ui_mcp_server("prompt" if approvals else "approve")},
+        developer_instructions=instructions,
+        extra_mcp_servers=extra,
     )
     codex_tid = resp["thread"]["id"]
     store.bind(agui_thread_id, codex_tid, sid)

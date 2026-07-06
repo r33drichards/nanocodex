@@ -428,7 +428,7 @@
             priority = 30;
             command = "${bridgeEnv}/bin/uvicorn nanocodex_client.agui.app:app --host 0.0.0.0 --port 8130";
             directory = "/app";
-            environment = ''NANOCODEX_URL="ws://127.0.0.1:4500",AGUI_BINDINGS_PATH="/data/agui/bindings.json"'';
+            environment = ''NANOCODEX_URL="ws://127.0.0.1:4500",AGUI_BINDINGS_PATH="/data/agui/bindings.json",AGUI_JOBS_PATH="/data/agui/jobs.json"'';
           };
           # BRIDGE_PROXY_TARGET is read per request by the app's /agui route
           # handler (NOT a rewrite — rewrites buffer SSE and are build-frozen).

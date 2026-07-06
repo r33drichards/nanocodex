@@ -296,6 +296,54 @@ The same shape works from the CLI (`nanocodex create --policy p.json --rego
 fetch.rego`), the MCP tools (`create_thread`/`send` `sandbox` arg), or
 `SandboxSpec.with_policy_files(...)` in Python.
 
+### Background jobs: crons & monitors (AG-UI bridge)
+
+The AG-UI bridge runs a scheduler so the **agent itself can put work on a
+crontab** — from its tools or from mcp-js code — and get the results steered
+back into its conversation (or into fresh threads). A job is three choices:
+
+| axis | options |
+|---|---|
+| action | `prompt` (text delivered as-is) · `code` (mcp-js JavaScript run on a shared mcp-v8 over streamable HTTP; the run's output is what gets delivered) |
+| kind | `cron` (deliver on every firing) · `monitor` (requires `code`; delivers only when the check triggers — `fire_on: "truthy"` = output non-empty and not false/null/undefined/0, `"change"` = output differs from the previous run, first run primes) |
+| target | `thread_id` set = deliver into that codex thread: **steer** the in-flight turn if one is running, else start a new turn on it · unset = **isolated**: each firing starts a brand-new bridge-wired thread |
+
+Schedules are 5-field crontab expressions (`*/15 * * * *`, `0 9 * * mon`,
+`@daily`, ... — dependency-free parser in `agui/cronexpr.py`) or a plain
+`every` interval in seconds (>= 5, for fast monitors).
+
+Two ways in, same scheduler:
+
+1. **Agent tools** — every bridge thread gets a `jobs` MCP server next to
+   `js`/`ui` (`create_job`, `list_jobs`, `update_job`, `delete_job`,
+   `run_job`). Like the `ui` server it's a dependency-free `/bin/sh` loop,
+   but the tools are real: `tools/call` is piped via curl to the bridge's
+   `/agui/jobs/rpc`, which resolves the calling thread from headers baked at
+   creation — so `target: "this-thread"` needs no ids at all. Disable
+   injection with `AGUI_JOBS=0`.
+2. **mcp-js code / REST** — the same CRUD over plain HTTP, callable with
+   `fetch()` from inside `run_js` (or anything else):
+
+```bash
+curl -sX POST localhost:8130/agui/jobs -H 'content-type: application/json' -d '{
+  "name": "paste watcher", "kind": "monitor", "every": 30, "fire_on": "change",
+  "code": "console.log(await (await fetch(\"https://paste.example/slot\")).text())",
+  "thread_id": "<codex thread id>"
+}'
+# GET /agui/jobs · GET/PATCH/DELETE /agui/jobs/{id} · POST /agui/jobs/{id}/run
+```
+
+Job `code` runs session-keyed (`job-<id>`) against the shared mcp-v8
+(standalone images run one on `:8080`; override with
+`NANOCODEX_JOBS_MCP_URL`, falling back to `NANOCODEX_MCP_V8_URL`), so a
+job's sandbox state persists across firings when the server persists heaps.
+Every firing is recorded on the job (`last` + capped `history`: fired /
+checked / skipped / error, with output). Jobs persist across bridge
+restarts via `AGUI_JOBS_PATH` (the standalone images bake
+`/data/agui/jobs.json`); `NANOCODEX_BRIDGE_URL` tells per-thread job tools
+and the instructions where the bridge is reachable from the codex container
+(default `http://127.0.0.1:8130`, correct for the standalone images).
+
 ### Websocket auth
 
 Codex refuses unauthenticated non-loopback websocket listeners, so the

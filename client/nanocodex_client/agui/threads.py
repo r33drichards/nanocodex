@@ -48,6 +48,15 @@ class ThreadStore:
     def get(self, agui_thread_id: str) -> ThreadBinding | None:
         return self._by_agui.get(agui_thread_id)
 
+    def codex_for_session(self, session_id: str) -> str | None:
+        """Reverse lookup: codex thread id by mcp-v8 session id. Used by the
+        jobs RPC endpoint to identify the calling thread from the session-id
+        header its per-thread `jobs` server was created with."""
+        for b in self._by_agui.values():
+            if b.session_id == session_id:
+                return b.codex_thread_id
+        return None
+
     def bind(self, agui_thread_id: str, codex_thread_id: str, session_id: str) -> ThreadBinding:
         b = ThreadBinding(codex_thread_id=codex_thread_id, session_id=session_id)
         self._by_agui[agui_thread_id] = b
