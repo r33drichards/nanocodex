@@ -10,9 +10,11 @@ name: deploy to railway
 # `github.event.workflow_run.head_sha` (the head commit of the run that just
 # finished) — which is exactly the tag the build published.
 #
-# NOTE: `RAILWAY_TOKEN` must be added as a repository secret. Create either an
-# account token or a project token in Railway (Account/Project Settings ->
-# Tokens) and store it as the `RAILWAY_TOKEN` secret in this repo's
+# NOTE: `RAILWAY_TOKEN` must be a Railway PROJECT token (Project Settings ->
+# Tokens), added as a repository secret. It authenticates via the
+# `Project-Access-Token` header and is auto-scoped to this project. (An
+# account token would use `Authorization: Bearer` instead.) Store it as the
+# `RAILWAY_TOKEN` secret in this repo's
 # Settings -> Secrets and variables -> Actions.
 
 on:
@@ -80,7 +82,7 @@ jobs:
         if: ${{ steps.guard.outputs.exists == 'true' }}
         run: |
           if [ -z "$RAILWAY_TOKEN" ]; then
-            echo "::error::RAILWAY_TOKEN secret is empty. Add a Railway account or project token as the RAILWAY_TOKEN repo secret." >&2
+            echo "::error::RAILWAY_TOKEN secret is empty. Add a Railway project token (Project Settings -> Tokens) as the RAILWAY_TOKEN repo secret." >&2
             exit 1
           fi
 
@@ -105,7 +107,7 @@ jobs:
             '{query:$q, variables:{s:$s, e:$e, img:$img}}')
           echo "== serviceInstanceUpdate =="
           curl -sS --fail-with-body -X POST "$API" \
-            -H "Authorization: Bearer $RAILWAY_TOKEN" \
+            -H "Project-Access-Token: $RAILWAY_TOKEN" \
             -H "Content-Type: application/json" \
             --data "$UPDATE_BODY"
           echo
@@ -119,7 +121,7 @@ jobs:
             '{query:$q, variables:{s:$s, e:$e}}')
           echo "== serviceInstanceDeployV2 =="
           DEPLOY_RESP=$(curl -sS --fail-with-body -X POST "$API" \
-            -H "Authorization: Bearer $RAILWAY_TOKEN" \
+            -H "Project-Access-Token: $RAILWAY_TOKEN" \
             -H "Content-Type: application/json" \
             --data "$DEPLOY_BODY") || DEPLOY_RESP=""
           echo "$DEPLOY_RESP"
@@ -135,7 +137,7 @@ jobs:
               --arg e "$ENVIRONMENT_ID" \
               '{query:$q, variables:{s:$s, e:$e}}')
             curl -sS --fail-with-body -X POST "$API" \
-              -H "Authorization: Bearer $RAILWAY_TOKEN" \
+              -H "Project-Access-Token: $RAILWAY_TOKEN" \
               -H "Content-Type: application/json" \
               --data "$REDEPLOY_BODY"
             echo
