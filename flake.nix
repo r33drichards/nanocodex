@@ -133,9 +133,12 @@
           # container filesystem, so the content-addressed heap/fs blob dirs
           # are safely shared; only the sled session DBs must stay per-process.
           #
-          # Persist by mounting volumes at /data, /tmp (per-thread agui
-          # sandbox state), /codex-home/sqlite and /codex-home/sessions;
-          # provide the ws token at /run/secrets/ws_token.
+          # Persist by mounting ONE volume at /data (Railway allows a single
+          # volume per service). It holds mcp-v8 heaps/fs and, via
+          # CODEX_SQLITE_HOME=/data/codex-state (baked below), all codex thread
+          # state — the state_5.sqlite thread index + sessions/ transcripts, so
+          # threads survive redeploys. Also mount /tmp for per-thread agui
+          # sandbox state; provide the ws token at /run/secrets/ws_token.
           pkgsTools = import nixpkgs-tools { inherit system; };
           pyPkgs = pkgsTools.python3Packages;
           lib = pkgs.lib;
@@ -485,6 +488,13 @@
                 Entrypoint = [ "/bin/supervisord" "-c" "/etc/supervisord.conf" ];
                 Env = [
                   "CODEX_HOME=/codex-home"
+                  # Persist codex thread state (state_5.sqlite index + sessions/
+                  # transcripts) on the /data volume so threads survive
+                  # redeploys. codex writes state_5.sqlite DIRECTLY under its
+                  # sqlite-home — which defaults to CODEX_HOME (/codex-home,
+                  # ephemeral) — so redirecting just sqlite-home to /data is
+                  # what keeps the thread LIST across deploys (mount /data).
+                  "CODEX_SQLITE_HOME=/data/codex-state"
                   "PATH=/usr/local/bin:/bin"
                   "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
                   "NIX_SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
