@@ -66,7 +66,9 @@ can't carry them):
 
 **`world_lua`** — a Lua chunk that `return`s the world table, for when you need
 **functions**: a procedural `generate(x,y,z)` (terrain for any cell not in
-`blocks`) or a `test(sim)` post-condition. Takes precedence over `world`:
+`blocks`) or a `test(sim)` post-condition (see [Asserting world
+state](#asserting-world-state-after-a-turtle-runs)). Takes precedence over
+`world`:
 
 ```json
 "world_lua": "return { start={x=0,y=64,z=0,facing='south',fuel=1000}, generate=function(x,y,z) if y<64 then return 'minecraft:stone' end end }"
@@ -74,10 +76,69 @@ can't carry them):
 
 Inside the program, `turtle.*` works (forward/back/up/down/turn*, dig*, detect*,
 inspect*, place*, select/getItemDetail/transferTo, refuel, suck/drop, fuel), and
-`sim.*` introspects (`sim.pos()`, `sim.facing()`, `sim.fuel()`, `sim.inventory()`,
-`sim.block(x,y,z)`, asserts). Facing: north `-Z`, south `+Z`, east `+X`, west
+`sim.*` introspects the world. Facing: north `-Z`, south `+Z`, east `+X`, west
 `-X`. To make GPS follow a moving turtle, mirror its world position with
 `setpos(sim.pos().x, sim.pos().y, sim.pos().z)` after each move.
+
+## Asserting world state after a turtle runs
+
+The injected `sim` table lets you both **read** and **assert** the world — so a
+test can prove "this block got mined", "the item ended up in slot 1", "the
+turtle is back where it started", etc.
+
+**Introspection** (read current state): `sim.pos()` → `{x,y,z}`, `sim.facing()`,
+`sim.fuel()`, `sim.inventory()`, `sim.selectedSlot()`, `sim.block(x,y,z)` (block
+name at a cell, or `nil` for air), `sim.chest(x,y,z)`, and `sim.worldDiff()` (the
+list of `{x,y,z,from,to}` cells the program changed).
+
+**Assertions** — non-fatal (they *all* run and are tallied, they don't abort the
+program). Each records an `ok`/`FAIL` line and bumps `sim.passed` / `sim.failed`:
+
+| assertion | checks |
+|---|---|
+| `sim.assertPos(x,y,z[,msg])` | turtle is at `x,y,z` |
+| `sim.assertFacing(f[,msg])` | facing == `f` (`"north"`/`"east"`/`"south"`/`"west"`) |
+| `sim.assertFuel(n[,msg])` | fuel level == `n` |
+| `sim.assertBlock(x,y,z,name[,msg])` | block at cell == `name` (use `nil` for "was mined / air") |
+| `sim.assertItem(slot,name[,count][,msg])` | slot holds `name` (and `count` if given) |
+| `sim.assertEq(a,b[,msg])`, `sim.assertTrue(v[,msg])` | generic |
+
+You can call these two ways:
+
+1. **Inline** in the program, then `emit()` what you want to see.
+2. **As a `world.test(sim)` post-condition** (recommended for pure state checks) —
+   a function on the world table, run automatically **after** the program
+   finishes. The runtime then emits the assertion log, a `sim: P passed, F failed`
+   summary, and a final `SIM_RESULT: PASS` / `SIM_RESULT: FAIL` line, and calls
+   `done()` for you — so a `world.test` node needs no manual `emit`/`done`. An
+   error thrown inside `test` counts as one failure. (`test` requires `world_lua`,
+   since JSON `world` can't carry a function.)
+
+Worked example — mine the block in front and assert the world afterwards:
+
+```json
+{ "timeout_ms": 15000, "nodes": [
+  { "label": "mine", "collect": true,
+    "world_lua": "return { start={x=0,y=64,z=0,facing='south',fuel=100}, blocks={['0,64,1']='minecraft:stone'}, test=function(sim) sim.assertBlock(0,64,1,nil,'front block mined') sim.assertItem(1,'minecraft:stone',1,'stone collected') sim.assertPos(0,64,0,'stayed put') end }",
+    "program": "turtle.dig()" }
+] }
+```
+
+`mine` output — the post-condition ran after `turtle.dig()`:
+
+```
+  ok   - front block mined (expected nil got nil)
+  ok   - stone collected (expected minecraft:stonex1 got minecraft:stonex1)
+  ok   - stayed put (expected 0,64,0 got 0,64,0)
+sim: 3 passed, 0 failed
+SIM_RESULT: PASS
+```
+
+A failing check reports the mismatch and flips the result — e.g. asserting the
+stone is *still* there after digging gives
+`FAIL - ... (expected minecraft:stone got nil)` / `sim: 0 passed, 1 failed` /
+`SIM_RESULT: FAIL`. Grep the returned `output` for `SIM_RESULT: PASS` to gate a
+test.
 
 ## Canonical example — a turtle travels between GPS nodes
 
