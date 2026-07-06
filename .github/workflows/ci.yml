@@ -168,8 +168,12 @@ jobs:
           printf 'checking: %s\n' "${scripts[@]}"
           # SC2015 ("A && B || C is not if-then-else") is an info-level false
           # positive for the intentional `[ cond ] && action || true` cleanup
-          # idiom in the e2e scripts. Everything else (SC2086, etc.) stays on.
-          shellcheck -e SC2015 "${scripts[@]}"
+          # idiom in the e2e scripts. SC2329 ("function never invoked") and its
+          # companion SC2317 ("command appears unreachable", emitted on the
+          # body) both misfire on trap handlers invoked indirectly (e.g.
+          # `trap cleanup EXIT` in scripts/dev-loop.sh). Everything else
+          # (SC2086, etc.) stays on.
+          shellcheck -e SC2015 -e SC2317 -e SC2329 "${scripts[@]}"
 
   # ── GitHub Actions workflows: actionlint (+ embedded shellcheck) ──────────
   actions:
