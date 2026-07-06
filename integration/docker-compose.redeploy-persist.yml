@@ -1,0 +1,26 @@
+# Overlay for the redeploy-persistence reproduction (test_redeploy_persistence.py).
+#
+# Layered on top of docker-compose.codex.yml, it moves codex's thread storage
+# (rollout files + the history index) onto named volumes so it survives a
+# container recreate:
+#
+#   /codex-home/sessions  — one rollout file per thread (the thread/list source)
+#   /codex-home/sqlite    — codex's history/thread index
+#
+# This is the docker equivalent of what the deployed standalone image must do:
+# put codex thread state on the single persistent Railway volume (/data) instead
+# of the ephemeral container layer. With this overlay a `--force-recreate` of the
+# codex service (a stand-in for a Railway redeploy) keeps the threads; without it
+# (plain docker-compose.codex.yml) they vanish — which is the bug.
+#
+#   docker compose -f docker-compose.codex.yml -f docker-compose.redeploy-persist.yml ...
+
+services:
+  codex:
+    volumes:
+      - codex-sessions:/codex-home/sessions
+      - codex-sqlite:/codex-home/sqlite
+
+volumes:
+  codex-sessions:
+  codex-sqlite:

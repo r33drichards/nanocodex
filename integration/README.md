@@ -96,6 +96,34 @@ integration/run-direct.sh        # compose project nanocodex-itest, ports 4599/4
 Tier 3 is **skipped, not failed**, if its endpoint/container is unavailable
 (`MCPV8_SKIP_S3=1` forces the skip).
 
+## 3. Threads survive a redeploy (persistence) — `test_redeploy_persistence.py`
+
+Reproduces the **"my threads disappear"** report, which actually bites on a
+**redeploy** (e.g. Railway), not a plain browser refresh. The web frontend fills
+its sidebar purely from codex `thread/list`, which enumerates the rollout files
+under `$CODEX_HOME` (`/codex-home/sessions`, indexed by `/codex-home/sqlite`). A
+refresh just re-reads that list — so threads only vanish if codex itself lost
+them, which is what happens when `/codex-home` sits on the container's ephemeral
+layer and the container is replaced.
+
+The test stands in a `--force-recreate` of the `codex` container for a redeploy
+and runs two model-free scenarios:
+
+| Scenario | `/codex-home` storage | After redeploy | Proves |
+|----------|-----------------------|----------------|--------|
+| A (bug)  | ephemeral (plain `docker-compose.codex.yml`) | thread **gone** from `thread/list` | the disappearance, and that its cause is codex thread state on ephemeral storage |
+| B (fix)  | `sessions`+`sqlite` on named volumes (`docker-compose.redeploy-persist.yml`) | thread **survives** | persisting codex thread storage fixes it — the regression guard |
+
+Scenario B mirrors what the deployed standalone image must do: put codex's
+thread storage on the one persistent volume. The image achieves this by
+symlinking `/codex-home/sessions` and `/codex-home/sqlite` onto `/data` (see
+`flake.nix` `mkStandaloneImage` `fakeRootCommands`), the only volume a
+single-volume host like Railway attaches.
+
+```bash
+integration/test_redeploy_persistence.py     # needs docker + the pinned image
+```
+
 ## CI
 
 `.github/workflows/integration.yml` runs both as separate jobs (pull image →
@@ -114,3 +142,5 @@ branch, `pull_request`, and `workflow_dispatch`.
 | `test_integration.py`       | supplementary direct-mcp-v8 test (incl. S3 tier) |
 | `docker-compose.yml`        | mcp-v8 (dir + s3) + MinIO stack |
 | `run-direct.sh`             | up → direct test → down |
+| `test_redeploy_persistence.py`      | redeploy thread-persistence test (bug + fix scenarios) |
+| `docker-compose.redeploy-persist.yml` | overlay putting codex thread storage on volumes |

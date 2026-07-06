@@ -133,9 +133,13 @@
           # container filesystem, so the content-addressed heap/fs blob dirs
           # are safely shared; only the sled session DBs must stay per-process.
           #
-          # Persist by mounting volumes at /data, /tmp (per-thread agui
-          # sandbox state), /codex-home/sqlite and /codex-home/sessions;
-          # provide the ws token at /run/secrets/ws_token.
+          # Persistence: everything stateful lives under /data (the single
+          # declared volume, so a one-volume host like Railway survives a
+          # redeploy). codex's thread storage (/codex-home/sessions rollouts +
+          # /codex-home/sqlite index) is symlinked onto /data in the image's
+          # fakeRootCommands; the agui bindings default to /data/agui too. Mount
+          # /tmp as well if per-thread agui sandbox heaps must also persist.
+          # Provide the ws token at /run/secrets/ws_token.
           pkgsTools = import nixpkgs-tools { inherit system; };
           pyPkgs = pkgsTools.python3Packages;
           lib = pkgs.lib;
@@ -480,6 +484,21 @@
               fakeRootCommands = ''
                 chmod 1777 tmp
                 mkdir -p data/heaps data/fs data/sessions run/secrets
+                # Codex is the source of truth for the thread list, and it keeps
+                # each thread as a rollout under $CODEX_HOME=/codex-home
+                # (sessions/ files, indexed by sqlite/). But the only volume this
+                # image declares — and the only one a single-volume host like
+                # Railway can attach — is /data. Left on the ephemeral container
+                # layer, /codex-home/sessions is wiped on every redeploy, so a
+                # deploy silently drops all of a user's threads (they "disappear"
+                # on the next page load, which just re-reads codex's now-empty
+                # thread/list). Redirect codex's thread storage onto /data so it
+                # survives a container replacement. codex create_dir_all's these
+                # itself on first use, following the symlinks onto the volume; a
+                # dangling symlink on a fresh (empty) volume reads as "no threads
+                # yet", exactly as a missing dir does today.
+                ln -sfn /data/codex/sessions codex-home/sessions
+                ln -sfn /data/codex/sqlite codex-home/sqlite
               '' + extraFakeRoot;
               config = {
                 Entrypoint = [ "/bin/supervisord" "-c" "/etc/supervisord.conf" ];
