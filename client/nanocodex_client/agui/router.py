@@ -9,6 +9,7 @@ model provider; the router only supplies the per-thread mcp-v8 sandbox.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import uuid
 
