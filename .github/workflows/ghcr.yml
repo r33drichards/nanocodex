@@ -113,6 +113,13 @@ jobs:
           df -h /
 
       - uses: DeterminateSystems/nix-installer-action@v16
+        with:
+          # Pull prebuilt store paths from the project's attic binary cache
+          # (self-hosted on Railway) so a warm cache turns the cold Rust
+          # compile into a download. Public cache — no auth needed to pull.
+          extra-conf: |
+            extra-substituters = https://attic-cache-production.up.railway.app/nanocodex
+            extra-trusted-public-keys = nanocodex:wvR6YvGpPY8g9uQPQv+rW7hu1toPFf7Oo0MEQNtjy7A=
 
       # Cross-run /nix/store cache: on a flake.lock hit the Rust builds are
       # skipped and the run is just image assembly + push. Keyed on flake.lock
@@ -129,6 +136,25 @@ jobs:
           purge-prefixes: nix-${{ matrix.arch }}-
           purge-created: 0
           purge-primary-key: never
+
+      # Upload newly-built store paths to the attic cache in the BACKGROUND
+      # (watch-store), so the upload overlaps the build instead of being a
+      # blocking final step. Runs after the store cache is restored so the
+      # attic client install is a cache hit. Never fails the job; skips on
+      # fork PRs (no secret).
+      - name: attic cache — background uploader (non-blocking)
+        continue-on-error: true
+        env:
+          ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
+        run: |
+          if [ -z "${ATTIC_TOKEN:-}" ]; then
+            echo "::notice::ATTIC_TOKEN unset — cache upload disabled (pull still works)"
+            exit 0
+          fi
+          nix profile install github:zhaofengli/attic#attic-client
+          attic login ci https://attic-cache-production.up.railway.app "$ATTIC_TOKEN"
+          nohup attic watch-store ci:nanocodex >/tmp/attic-watch.log 2>&1 &
+          echo "attic watch-store started (PID $!) — uploading store paths as they build"
 
       - name: nix build + push all requested images (skopeo)
         run: |
