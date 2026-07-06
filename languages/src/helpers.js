@@ -332,6 +332,24 @@
       return { selftest: true, pass: result === 1, result };
     }
     const payload = Object.assign({ rom }, spec);
+    // Post-conditions: the embedded wasm's ccsim prelude installs the turtle
+    // engine but has no postlude, so a world's `test(sim)` never runs on its
+    // own. Append a postlude to each turtle node's program that, if the world
+    // defined a test, runs it (via sim.runTest(), added in sim/engine.lua),
+    // emits the assertion log + summary, and signals done(). No-op when the
+    // world has no test. Mirrors sim/harness.lua and ccsim.cpp's postlude() so
+    // behaviour is identical once the wasm is rebuilt with that baked in.
+    const CRAFTOS_POSTLUDE =
+      "\n;do local __s=_G.sim if __s and __s.hasTest then __s.runTest()"
+      + " for _,l in ipairs(__s.log) do emit(l) end"
+      + " emit(('sim: %d passed, %d failed'):format(__s.passed,__s.failed))"
+      + " emit('SIM_RESULT: '..(__s.failed==0 and 'PASS' or 'FAIL'))"
+      + " if done then done() end end end\n";
+    for (const nd of (payload.nodes || [])) {
+      if (nd && (nd.world != null || nd.world_lua != null)) {
+        nd.program = (nd.program || '') + CRAFTOS_POSTLUDE;
+      }
+    }
     M.ccall('cc_run', null, ['string'], [JSON.stringify(payload)]);
     const ptr = M.ccall('cc_run_result', 'number', []);
     const json = M.UTF8ToString(ptr);
