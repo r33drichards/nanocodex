@@ -47,6 +47,12 @@ import os
 from ..core import POLICIES_JSON, SandboxSpec
 
 REMOTE_URL_ENV = "NANOCODEX_MCP_V8_URL"
+# Optional bearer token for an authenticated remote mcp-v8 (e.g. the dedicated
+# `mcp-v8-service` image, which fronts mcp-v8 with a token-checking reverse
+# proxy — mcp-v8 itself does NOT enforce auth). When set, every per-thread
+# streamable-HTTP request carries `Authorization: Bearer <token>`. Unset = no
+# header, for a private/internal-only remote that needs no auth.
+REMOTE_TOKEN_ENV = "NANOCODEX_MCP_V8_TOKEN"
 
 # The languages image's per-thread sandbox assets (baked by Dockerfile.languages).
 LANGUAGES_POLICIES_JSON = "/opt/languages/policies.json"
@@ -218,11 +224,18 @@ def _remote_server(session_id: str, approvals: bool) -> dict:
             f"NANOCODEX_SANDBOX=remote requires {REMOTE_URL_ENV} "
             "(e.g. http://mcp-v8:8080/mcp)"
         )
+    # mcp-v8's HTTP mode keys per-session state off X-MCP-Session-Id; a stable
+    # id per thread = stateful within the thread, isolated across threads.
+    http_headers = {"X-MCP-Session-Id": session_id}
+    # Authenticate to a token-fronted remote (the `mcp-v8-service` image). mcp-v8
+    # has no enforcing auth of its own, so a PUBLIC url must sit behind a proxy
+    # that checks this bearer token; a private/internal remote leaves it unset.
+    token = os.environ.get(REMOTE_TOKEN_ENV, "").strip()
+    if token:
+        http_headers["Authorization"] = f"Bearer {token}"
     return {
         "url": url,
-        # mcp-v8's HTTP mode keys per-session state off this header; a stable
-        # id per thread = stateful within the thread, isolated across threads.
-        "http_headers": {"X-MCP-Session-Id": session_id},
+        "http_headers": http_headers,
         "startup_timeout_sec": 30,
         "tool_timeout_sec": 180,
         "default_tools_approval_mode": "prompt" if approvals else "approve",
