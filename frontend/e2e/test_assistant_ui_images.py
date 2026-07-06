@@ -29,10 +29,12 @@ def _solid_png(w, h, rgb):
         c = t + d
         return struct.pack(">I", len(d)) + c + struct.pack(">I", zlib.crc32(c) & 0xFFFFFFFF)
 
-    return (b"\x89PNG\r\n\x1a\n"
-            + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
-            + chunk(b"IDAT", zlib.compress(raw))
-            + chunk(b"IEND", b""))
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(raw))
+        + chunk(b"IEND", b"")
+    )
 
 
 BLUE_PNG = _solid_png(48, 48, (0, 0, 255))
@@ -101,8 +103,9 @@ def test_image_attach_and_paste_previews():
                 break
             page.wait_for_timeout(500)
         um = page.query_selector_all("[data-testid=user-message]")
-        assert um and um[-1].query_selector("[data-testid=message-image]"), \
+        assert um and um[-1].query_selector("[data-testid=message-image]"), (
             "sent image did not render in the message"
+        )
 
         if os.environ.get("AGUI_VISION_SMOKE") == "1":
             # the checks above sent the earlier image; attach a fresh one.

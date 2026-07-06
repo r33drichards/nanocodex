@@ -72,7 +72,8 @@ def run_js(base, code, session=None, timeout=60):
     if session is not None:
         url += "?session=" + urllib.parse.quote(session)
     status, body = _http(
-        "POST", url,
+        "POST",
+        url,
         data=code.encode("utf-8"),
         headers={"Content-Type": "application/javascript"},
     )
@@ -95,9 +96,7 @@ def run_js(base, code, session=None, timeout=60):
     if final is None:
         raise TestError(f"execution {exec_id} did not finish within {timeout}s")
     if final["status"] != "completed":
-        raise TestError(
-            f"execution {exec_id} status={final['status']} error={final.get('error')}"
-        )
+        raise TestError(f"execution {exec_id} status={final['status']} error={final.get('error')}")
 
     _, obody = _http("GET", f"{base}/api/executions/{exec_id}/output")
     return json.loads(obody).get("data", ""), final
@@ -126,7 +125,8 @@ def tier2_stateful_heap():
     session = "itest-tier2"
     # Call A sets a global and snapshots the heap under the session.
     out, _ = run_js(
-        DIR_URL, 'globalThis.counter = 100; console.log(globalThis.counter)',
+        DIR_URL,
+        "globalThis.counter = 100; console.log(globalThis.counter)",
         session=session,
     )
     assert_eq(out, "100", "call A sets globalThis.counter")
@@ -136,7 +136,9 @@ def tier2_stateful_heap():
     assert_eq(out, "100", "call B reads persisted globalThis.counter")
     # Negative control: a brand-new session must NOT see the other's state.
     out, _ = run_js(
-        DIR_URL, "console.log(typeof globalThis.counter)", session="itest-tier2-fresh",
+        DIR_URL,
+        "console.log(typeof globalThis.counter)",
+        session="itest-tier2-fresh",
     )
     assert_eq(out, "undefined", "fresh session is isolated")
 
@@ -155,7 +157,8 @@ def tier3_durable_s3():
 
     session = "itest-tier3"
     out, _ = run_js(
-        S3_URL, 'globalThis.durable = 4242; console.log(globalThis.durable)',
+        S3_URL,
+        "globalThis.durable = 4242; console.log(globalThis.durable)",
         session=session,
     )
     assert_eq(out, "4242", "set durable state (heap -> S3)")
@@ -166,7 +169,9 @@ def tier3_durable_s3():
     try:
         subprocess.run(
             ["docker", "restart", S3_CONTAINER],
-            check=True, capture_output=True, text=True,
+            check=True,
+            capture_output=True,
+            text=True,
         )
     except (subprocess.CalledProcessError, FileNotFoundError) as exc:
         detail = getattr(exc, "stderr", str(exc))

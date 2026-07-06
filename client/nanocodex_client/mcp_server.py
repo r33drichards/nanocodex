@@ -55,9 +55,9 @@ _SANDBOX_DOC = (
     "`files` ({container_path: content} written before mcp-v8 starts — use for "
     "custom rego), `policies` (policies.json as a dict, passed inline), "
     "`bearer` ({host: token}), `oauth` ([rule]), `extra_args`. "
-    "Custom-policy example: {\"files\": {\"/tmp/t/p.rego\": \"package mcp.fetch\\n"
-    "default allow=false\\n...\", \"/tmp/t/p.json\": \"{...file:///tmp/t/p.rego...}\"}, "
-    "\"args\": [\"--policies-json\", \"/tmp/t/p.json\"]}."
+    'Custom-policy example: {"files": {"/tmp/t/p.rego": "package mcp.fetch\\n'
+    'default allow=false\\n...", "/tmp/t/p.json": "{...file:///tmp/t/p.rego...}"}, '
+    '"args": ["--policies-json", "/tmp/t/p.json"]}.'
 )
 
 
@@ -95,9 +95,13 @@ async def send(
         await nc.resume_thread(thread_id, sandbox=_sandbox(sandbox))
         result = await nc.run_turn(thread_id, prompt, timeout=timeout)
         tool_calls = [
-            {"tool": f"{i.get('server')}.{i.get('tool')}", "status": i.get("status"),
-             "error": (i.get("error") or {}).get("message")}
-            for i in result["items"] if i.get("type") == "mcpToolCall"
+            {
+                "tool": f"{i.get('server')}.{i.get('tool')}",
+                "status": i.get("status"),
+                "error": (i.get("error") or {}).get("message"),
+            }
+            for i in result["items"]
+            if i.get("type") == "mcpToolCall"
         ]
         return {
             "status": result["turn"].get("status"),
@@ -129,8 +133,11 @@ async def list_threads() -> dict:
     async with await Nanocodex.connect() as nc:
         return {
             "threads": [
-                {"threadId": t["id"], "status": t.get("status", {}).get("type"),
-                 "preview": (t.get("preview") or "")[:80]}
+                {
+                    "threadId": t["id"],
+                    "status": t.get("status", {}).get("type"),
+                    "preview": (t.get("preview") or "")[:80],
+                }
                 async for t in nc.iter_threads()
             ]
         }

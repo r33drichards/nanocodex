@@ -32,6 +32,7 @@ Rules are given as a dict keyed by the predecessor symbol.  Each value may be:
 Run `python lsystem.py --demo plant_a` for a worked example, or pass a JSON
 spec on stdin / via --spec.  See the __main__ block for the JSON shape.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -39,7 +40,7 @@ import json
 import math
 import random
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 # --------------------------------------------------------------------------- #
@@ -69,13 +70,15 @@ def _normalise_rules(rules: dict) -> dict[str, list[Production]]:
                     succ, weight = item[0], (item[1] if len(item) > 1 else 1.0)
                     prods.append(Production(pred, succ, weight=float(weight)))
                 elif isinstance(item, dict):
-                    prods.append(Production(
-                        pred,
-                        item["succ"],
-                        item.get("left", ""),
-                        item.get("right", ""),
-                        float(item.get("weight", 1.0)),
-                    ))
+                    prods.append(
+                        Production(
+                            pred,
+                            item["succ"],
+                            item.get("left", ""),
+                            item.get("right", ""),
+                            float(item.get("weight", 1.0)),
+                        )
+                    )
                 else:
                     raise ValueError(f"bad production for {pred!r}: {item!r}")
         out[pred] = prods
@@ -93,7 +96,7 @@ def _neighbours(s: str, i: int, ignore: set[str], direction: int, k: int) -> str
             got.append(c)
         j += direction
     if direction < 0:
-        got.reverse()          # left neighbours back into reading order
+        got.reverse()  # left neighbours back into reading order
     return "".join(got)
 
 
@@ -120,8 +123,9 @@ def _choose(prods: list[Production], rng: random.Random) -> Production:
     return prods[-1]
 
 
-def expand(axiom: str, rules: dict, n: int, *,
-           ignore: str = "+-[]!'", seed: int | None = None) -> str:
+def expand(
+    axiom: str, rules: dict, n: int, *, ignore: str = "+-[]!'", seed: int | None = None
+) -> str:
     """Apply the productions in parallel `n` times, ABOP-style."""
     table = _normalise_rules(rules)
     ignore_set = set(ignore)
@@ -134,7 +138,7 @@ def expand(axiom: str, rules: dict, n: int, *,
             if prods:
                 out.append(_choose(prods, rng).succ)
             else:
-                out.append(c)          # identity production
+                out.append(c)  # identity production
         s = "".join(out)
     return s
 
@@ -146,7 +150,7 @@ def expand(axiom: str, rules: dict, n: int, *,
 class TurtleState:
     x: float = 0.0
     y: float = 0.0
-    heading: float = 90.0        # degrees; 0 = +x (east), 90 = +y (up)
+    heading: float = 90.0  # degrees; 0 = +x (east), 90 = +y (up)
     width: float = 1.0
     colour: int = 0
 
@@ -154,11 +158,20 @@ class TurtleState:
 DEFAULT_PALETTE = ["#2f6d3c", "#3f8a4e", "#7bb661", "#b5651d", "#8a5a2b"]
 
 
-def render_svg(s: str, *, angle: float = 25.0, step: float = 10.0,
-               start_heading: float = 90.0, width: float = 1.6,
-               width_delta: float = 0.7, palette: list[str] | None = None,
-               background: str | None = None, pad: float = 8.0,
-               draw_symbols: str = "FG", move_symbols: str = "fg") -> str:
+def render_svg(
+    s: str,
+    *,
+    angle: float = 25.0,
+    step: float = 10.0,
+    start_heading: float = 90.0,
+    width: float = 1.6,
+    width_delta: float = 0.7,
+    palette: list[str] | None = None,
+    background: str | None = None,
+    pad: float = 8.0,
+    draw_symbols: str = "FG",
+    move_symbols: str = "fg",
+) -> str:
     """Interpret an expanded string and return a standalone SVG document.
 
     Geometry is computed in math coordinates (y up) and flipped on output so the
@@ -199,8 +212,9 @@ def render_svg(s: str, *, angle: float = 25.0, step: float = 10.0,
         # everything else: no-op
 
     if not segments:
-        return ('<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1" '
-                'viewBox="0 0 1 1"></svg>')
+        return (
+            '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1" viewBox="0 0 1 1"></svg>'
+        )
 
     xs = [x for seg in segments for x in (seg[0], seg[2])]
     ys = [y for seg in segments for y in (seg[1], seg[3])]
@@ -211,11 +225,13 @@ def render_svg(s: str, *, angle: float = 25.0, step: float = 10.0,
     def fx(x: float) -> float:
         return x - minx + pad
 
-    def fy(y: float) -> float:          # flip y for screen coordinates
+    def fy(y: float) -> float:  # flip y for screen coordinates
         return (maxy - y) + pad
 
-    parts = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{w:.1f}" '
-             f'height="{h:.1f}" viewBox="0 0 {w:.1f} {h:.1f}">']
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{w:.1f}" '
+        f'height="{h:.1f}" viewBox="0 0 {w:.1f} {h:.1f}">'
+    ]
     if background:
         parts.append(f'<rect width="100%" height="100%" fill="{background}"/>')
     parts.append('<g stroke-linecap="round" fill="none">')
@@ -226,7 +242,7 @@ def render_svg(s: str, *, angle: float = 25.0, step: float = 10.0,
             f'x2="{fx(x2):.2f}" y2="{fy(y2):.2f}" '
             f'stroke="{col}" stroke-width="{sw:.2f}"/>'
         )
-    parts.append('</g></svg>')
+    parts.append("</g></svg>")
     return "\n".join(parts)
 
 
@@ -235,41 +251,74 @@ def render_svg(s: str, *, angle: float = 25.0, step: float = 10.0,
 # --------------------------------------------------------------------------- #
 DEMOS: dict[str, dict] = {
     # Fig 1.7a quadratic Koch island
-    "koch_island": dict(axiom="F-F-F-F", rules={"F": "F-F+F+FF-F-F+F"},
-                        n=2, angle=90, start_heading=0, step=10),
+    "koch_island": dict(
+        axiom="F-F-F-F", rules={"F": "F-F+F+FF-F-F+F"}, n=2, angle=90, start_heading=0, step=10
+    ),
     # von Koch snowflake
-    "snowflake": dict(axiom="F--F--F", rules={"F": "F+F--F+F"},
-                      n=3, angle=60, start_heading=0, step=10),
+    "snowflake": dict(
+        axiom="F--F--F", rules={"F": "F+F--F+F"}, n=3, angle=60, start_heading=0, step=10
+    ),
     # Sierpinski gasket (FASS)
-    "sierpinski": dict(axiom="F-G-G", rules={"F": "F-G+F+G-F", "G": "GG"},
-                       n=5, angle=120, start_heading=0, step=8),
+    "sierpinski": dict(
+        axiom="F-G-G", rules={"F": "F-G+F+G-F", "G": "GG"}, n=5, angle=120, start_heading=0, step=8
+    ),
     # Dragon curve
-    "dragon": dict(axiom="FX", rules={"X": "X+YF+", "Y": "-FX-Y"},
-                   n=11, angle=90, start_heading=0, step=6),
+    "dragon": dict(
+        axiom="FX", rules={"X": "X+YF+", "Y": "-FX-Y"}, n=11, angle=90, start_heading=0, step=6
+    ),
     # Hilbert space-filling curve
-    "hilbert": dict(axiom="A", rules={"A": "-BF+AFA+FB-", "B": "+AF-BFB-FA+"},
-                    n=5, angle=90, start_heading=0, step=8),
+    "hilbert": dict(
+        axiom="A",
+        rules={"A": "-BF+AFA+FB-", "B": "+AF-BFB-FA+"},
+        n=5,
+        angle=90,
+        start_heading=0,
+        step=8,
+    ),
     # Gosper / flowsnake curve (A and B are both drawn)
-    "gosper": dict(axiom="A", rules={"A": "A-B--B+A++AA+B-", "B": "+A-BB--B-A++A+B"},
-                   n=4, angle=60, start_heading=0, step=8, draw_symbols="AB"),
+    "gosper": dict(
+        axiom="A",
+        rules={"A": "A-B--B+A++AA+B-", "B": "+A-BB--B-A++A+B"},
+        n=4,
+        angle=60,
+        start_heading=0,
+        step=8,
+        draw_symbols="AB",
+    ),
     # Fig 1.24 plants (bracketed OL-systems)
-    "plant_a": dict(axiom="F", rules={"F": "F[+F]F[-F]F"},
-                    n=5, angle=25.7, start_heading=90, step=6),
-    "plant_b": dict(axiom="F", rules={"F": "F[+F]F[-F][F]"},
-                    n=5, angle=20, start_heading=90, step=6),
-    "plant_c": dict(axiom="F", rules={"F": "FF-[-F+F+F]+[+F-F-F]"},
-                    n=4, angle=22.5, start_heading=90, step=8),
-    "plant_d": dict(axiom="X", rules={"X": "F[+X]F[-X]+X", "F": "FF"},
-                    n=7, angle=20, start_heading=90, step=4),
-    "plant_e": dict(axiom="X", rules={"X": "F[+X][-X]FX", "F": "FF"},
-                    n=7, angle=25.7, start_heading=90, step=4),
-    "plant_f": dict(axiom="X", rules={"X": "F-[[X]+X]+F[+FX]-X", "F": "FF"},
-                    n=5, angle=22.5, start_heading=90, step=6),
+    "plant_a": dict(
+        axiom="F", rules={"F": "F[+F]F[-F]F"}, n=5, angle=25.7, start_heading=90, step=6
+    ),
+    "plant_b": dict(
+        axiom="F", rules={"F": "F[+F]F[-F][F]"}, n=5, angle=20, start_heading=90, step=6
+    ),
+    "plant_c": dict(
+        axiom="F", rules={"F": "FF-[-F+F+F]+[+F-F-F]"}, n=4, angle=22.5, start_heading=90, step=8
+    ),
+    "plant_d": dict(
+        axiom="X", rules={"X": "F[+X]F[-X]+X", "F": "FF"}, n=7, angle=20, start_heading=90, step=4
+    ),
+    "plant_e": dict(
+        axiom="X", rules={"X": "F[+X][-X]FX", "F": "FF"}, n=7, angle=25.7, start_heading=90, step=4
+    ),
+    "plant_f": dict(
+        axiom="X",
+        rules={"X": "F-[[X]+X]+F[+FX]-X", "F": "FF"},
+        n=5,
+        angle=22.5,
+        start_heading=90,
+        step=6,
+    ),
     # Fig 1.27 stochastic bush (equal thirds)
     "stochastic_bush": dict(
         axiom="F",
-        rules={"F": [("F[+F]F[-F]F", 1/3), ("F[+F]F", 1/3), ("F[-F]F", 1/3)]},
-        n=5, angle=25.7, start_heading=90, step=6, seed=7),
+        rules={"F": [("F[+F]F[-F]F", 1 / 3), ("F[+F]F", 1 / 3), ("F[-F]F", 1 / 3)]},
+        n=5,
+        angle=25.7,
+        start_heading=90,
+        step=6,
+        seed=7,
+    ),
 }
 
 
@@ -278,8 +327,18 @@ def run_demo(name: str) -> str:
         raise SystemExit(f"unknown demo {name!r}; choose from {', '.join(DEMOS)}")
     spec = dict(DEMOS[name])
     n = spec.pop("n")
-    render_keys = ("angle", "step", "start_heading", "width", "background",
-                   "draw_symbols", "move_symbols", "width_delta", "palette", "pad")
+    render_keys = (
+        "angle",
+        "step",
+        "start_heading",
+        "width",
+        "background",
+        "draw_symbols",
+        "move_symbols",
+        "width_delta",
+        "palette",
+        "pad",
+    )
     render_kwargs = {k: spec.pop(k) for k in list(spec) if k in render_keys}
     seed = spec.pop("seed", None)
     final = expand(spec["axiom"], spec["rules"], n, seed=seed)
@@ -294,8 +353,9 @@ def main() -> None:
     ap.add_argument("--demo", help="render a built-in example: " + ", ".join(DEMOS))
     ap.add_argument("--spec", help="path to a JSON spec (see module docstring)")
     ap.add_argument("--out", "-o", help="write SVG here (default: stdout)")
-    ap.add_argument("--string", action="store_true",
-                    help="print the expanded string instead of SVG")
+    ap.add_argument(
+        "--string", action="store_true", help="print the expanded string instead of SVG"
+    )
     args = ap.parse_args()
 
     if args.demo:
@@ -305,19 +365,31 @@ def main() -> None:
         spec = json.loads(raw)
         n = spec.get("n", spec.get("iterations", 4))
         seed = spec.get("seed")
-        final = expand(spec["axiom"], spec["rules"], n,
-                       ignore=spec.get("ignore", "+-[]!'"), seed=seed)
+        final = expand(
+            spec["axiom"], spec["rules"], n, ignore=spec.get("ignore", "+-[]!'"), seed=seed
+        )
         if args.string:
             print(final)
             return
-        render_keys = {"angle", "step", "start_heading", "width", "width_delta",
-                       "palette", "background", "pad"}
+        render_keys = {
+            "angle",
+            "step",
+            "start_heading",
+            "width",
+            "width_delta",
+            "palette",
+            "background",
+            "pad",
+        }
         rk = {k: spec[k] for k in spec if k in render_keys}
         svg = render_svg(final, **rk)
 
     if args.string and args.demo:  # allow --demo --string too
-        spec = dict(DEMOS[args.demo]); n = spec.pop("n"); seed = spec.pop("seed", None)
-        print(expand(spec["axiom"], spec["rules"], n, seed=seed)[:2000]); return
+        spec = dict(DEMOS[args.demo])
+        n = spec.pop("n")
+        seed = spec.pop("seed", None)
+        print(expand(spec["axiom"], spec["rules"], n, seed=seed)[:2000])
+        return
 
     if args.out:
         with open(args.out, "w") as fh:

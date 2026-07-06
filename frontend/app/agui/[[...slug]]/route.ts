@@ -10,10 +10,7 @@ export const dynamic = "force-dynamic";
 
 const TARGET = () => process.env.BRIDGE_PROXY_TARGET || "http://127.0.0.1:8132";
 
-async function proxy(
-  req: NextRequest,
-  { params }: { params: Promise<{ slug?: string[] }> },
-) {
+async function proxy(req: NextRequest, { params }: { params: Promise<{ slug?: string[] }> }) {
   const { slug } = await params;
   const path = slug?.length ? `/${slug.map(encodeURIComponent).join("/")}` : "";
   const search = new URL(req.url).search;
@@ -33,8 +30,7 @@ async function proxy(
   return new Response(upstream.body, {
     status: upstream.status,
     headers: {
-      "content-type":
-        upstream.headers.get("content-type") ?? "application/octet-stream",
+      "content-type": upstream.headers.get("content-type") ?? "application/octet-stream",
       "cache-control": "no-store",
       // Defensive: some proxies buffer without this.
       "x-accel-buffering": "no",

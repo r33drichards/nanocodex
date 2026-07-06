@@ -1,14 +1,14 @@
 """Typer CLI for operating a nanocodex app server.
 
-    nanocodex create [--bearer HOST TOKEN] [--oauth RULE] [--model M]
-    nanocodex send THREAD_ID PROMPT        # run a turn, stream to completion
-    nanocodex steer THREAD_ID PROMPT       # inject into the in-flight turn
-    nanocodex messages THREAD_ID           # full transcript (thread/read)
-    nanocodex subscribe THREAD_ID          # live-tail notifications
-    nanocodex threads                      # list threads
-    nanocodex rpc METHOD [--params JSON]   # naive passthrough to codex
-    nanocodex api [--port 8788]            # serve the FastAPI bridge
-    nanocodex mcp                          # serve the FastMCP server (stdio)
+nanocodex create [--bearer HOST TOKEN] [--oauth RULE] [--model M]
+nanocodex send THREAD_ID PROMPT        # run a turn, stream to completion
+nanocodex steer THREAD_ID PROMPT       # inject into the in-flight turn
+nanocodex messages THREAD_ID           # full transcript (thread/read)
+nanocodex subscribe THREAD_ID          # live-tail notifications
+nanocodex threads                      # list threads
+nanocodex rpc METHOD [--params JSON]   # naive passthrough to codex
+nanocodex api [--port 8788]            # serve the FastAPI bridge
+nanocodex mcp                          # serve the FastMCP server (stdio)
 """
 
 from __future__ import annotations
@@ -64,11 +64,13 @@ def _sandbox(
         text = _Path(config).read_text()
         if config.endswith(".toml"):
             import tomllib
+
             doc = tomllib.loads(text)
         else:
             doc = _json.loads(text)
-        return SandboxSpec(config=doc, config_format=config_format, bearer=pairs,
-                           extra_args=list(arg or []))
+        return SandboxSpec(
+            config=doc, config_format=config_format, bearer=pairs, extra_args=list(arg or [])
+        )
 
     files: dict[str, str] = {}
     for local in rego or []:
@@ -95,10 +97,16 @@ def _run(coro):
 
 _bearer_opt = typer.Option(None, help="HOST=TOKEN static fetch bearer (repeatable)")
 _oauth_opt = typer.Option(None, help="mcp-v8 oauth client-credentials fetch-header rule")
-_config_opt = typer.Option(None, "--config", help="local mcp-v8 config file (.json/.toml), passed via --config")
-_config_fmt_opt = typer.Option("toml", "--config-format", help="on-disk format for --config (toml|json)")
+_config_opt = typer.Option(
+    None, "--config", help="local mcp-v8 config file (.json/.toml), passed via --config"
+)
+_config_fmt_opt = typer.Option(
+    "toml", "--config-format", help="on-disk format for --config (toml|json)"
+)
 _policy_opt = typer.Option(None, help="local policies.json, passed inline to mcp-v8")
-_rego_opt = typer.Option(None, help="local .rego file written into the container before mcp-v8 starts (repeatable)")
+_rego_opt = typer.Option(
+    None, help="local .rego file written into the container before mcp-v8 starts (repeatable)"
+)
 _arg_opt = typer.Option(None, "--arg", help="extra raw mcp-v8 arg (repeatable)")
 
 
@@ -116,11 +124,16 @@ def create(
     token: Optional[str] = _token_opt,
 ):
     """Start a new thread with its own mcp-v8 sandbox."""
+
     async def go():
         async with await Nanocodex.connect(url, token) as nc:
-            resp = await nc.create_thread(sandbox=_sandbox(bearer, oauth, config, config_format, policy, rego, arg), model=model)
+            resp = await nc.create_thread(
+                sandbox=_sandbox(bearer, oauth, config, config_format, policy, rego, arg),
+                model=model,
+            )
             typer.echo(resp["thread"]["id"])
             typer.echo(f"model: {resp.get('model')} ({resp.get('modelProvider')})", err=True)
+
     _run(go())
 
 
@@ -141,9 +154,12 @@ def send(
     token: Optional[str] = _token_opt,
 ):
     """Run a turn on a thread and stream it to completion."""
+
     async def go():
         async with await Nanocodex.connect(url, token) as nc:
-            await nc.resume_thread(thread_id, sandbox=_sandbox(bearer, oauth, config, config_format, policy, rego, arg))
+            await nc.resume_thread(
+                thread_id, sandbox=_sandbox(bearer, oauth, config, config_format, policy, rego, arg)
+            )
 
             def on_event(method, params):
                 if method == "item/completed":
@@ -158,16 +174,19 @@ def send(
             typer.echo(f"turn {result['turn']['id']} finished: {status}", err=True)
             if status != "completed":
                 raise typer.Exit(1)
+
     _run(go())
 
 
 @app.command()
 def steer(thread_id: str, prompt: str, url: str = _url_opt, token: Optional[str] = _token_opt):
     """Inject extra input into the thread's in-flight turn."""
+
     async def go():
         async with await Nanocodex.connect(url, token) as nc:
             await nc.steer_turn(thread_id, prompt)
             typer.echo("steered")
+
     _run(go())
 
 
@@ -180,6 +199,7 @@ def messages(
     token: Optional[str] = _token_opt,
 ):
     """List all messages/items recorded on a thread."""
+
     async def go():
         async with await Nanocodex.connect(url, token) as nc:
             thread = await nc.read_thread(thread_id)
@@ -190,12 +210,14 @@ def messages(
                 typer.echo(f"── turn {turn['turn']} [{turn['status']}]")
                 for line in turn["lines"]:
                     typer.echo(f"  {line}")
+
     _run(go())
 
 
 @app.command()
 def subscribe(thread_id: str, url: str = _url_opt, token: Optional[str] = _token_opt):
     """Attach to a thread and live-tail its notifications (ctrl-c to stop)."""
+
     async def go():
         async with await Nanocodex.connect(url, token) as nc:
             await nc.resume_thread(thread_id)
@@ -210,17 +232,20 @@ def subscribe(thread_id: str, url: str = _url_opt, token: Optional[str] = _token
                         typer.echo(f"\n{line}")
                 else:
                     typer.echo(f"\n[{method}] {json.dumps(params)[:200]}")
+
     _run(go())
 
 
 @app.command()
 def threads(url: str = _url_opt, token: Optional[str] = _token_opt):
     """List all threads on the server."""
+
     async def go():
         async with await Nanocodex.connect(url, token) as nc:
             async for t in nc.iter_threads():
                 preview = (t.get("preview") or "").replace("\n", " ")[:60]
                 typer.echo(f"{t['id']}  {t.get('status', {}).get('type', ''):<9} {preview}")
+
     _run(go())
 
 
@@ -232,10 +257,12 @@ def rpc(
     token: Optional[str] = _token_opt,
 ):
     """Naive passthrough: send any raw app-server JSON-RPC request."""
+
     async def go():
         async with await Nanocodex.connect(url, token) as nc:
             result = await nc.request(method, json.loads(params))
             typer.echo(json.dumps(result, indent=2))
+
     _run(go())
 
 

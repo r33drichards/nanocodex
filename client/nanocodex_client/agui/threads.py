@@ -80,9 +80,7 @@ class ThreadStore:
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self._path.with_name(self._path.name + ".tmp")
-            tmp.write_text(
-                json.dumps({k: asdict(v) for k, v in self._by_agui.items()}, indent=1)
-            )
+            tmp.write_text(json.dumps({k: asdict(v) for k, v in self._by_agui.items()}, indent=1))
             os.replace(tmp, self._path)
         except Exception as err:
             print(f"[threads] failed to persist bindings to {self._path}: {err}")

@@ -66,28 +66,52 @@ SKILLS_DIR = "/codex-home/skills"
 # instructions to use the module from run_js. The descriptions embed the exact
 # helper call so the model knows how to invoke each after loading bootstrap.js.
 _WASM_MODULES = [
-    ("picat", "/opt/languages/picat.wasm", "512m",
-     "Picat logic/constraint language. In ONE run_js call, first (0,eval) bootstrap.js then "
-     "await picat(code, args?) -> {stdout, stderr, exitCode}."),
-    ("tla", "/opt/languages/tla_checker.wasm", "512m",
-     "TLA+ model checker. In ONE run_js call, first (0,eval) bootstrap.js then "
-     "await tlaplus(spec, opts?) (inline '---- CONFIG ----' supported)."),
-    ("minizinc", "/opt/languages/minizinc.wasm", "1g",
-     "MiniZinc constraint solver. In ONE run_js call, first (0,eval) bootstrap.js then "
-     "await minizinc(model, {data?, args?}?) -> {status, solutions, ...}."),
-    ("autolisp", "/opt/languages/acadlisp.wasm", "512m",
-     "AutoLISP interpreter. In ONE run_js call, first (0,eval) bootstrap.js then "
-     "await autolisp(code) -> {result, output, svg}."),
-    ("lua", "/opt/languages/lua.wasm", "512m",
-     "Lua 5.4 VM. In ONE run_js call, first (0,eval) bootstrap.js then "
-     "await lua(code, opts?) -> {result, stdout, error}."),
-    ("craftos", "/opt/languages/craftos.wasm", "512m",
-     "ComputerCraft/CC:Tweaked emulator (networked computers + turtles). In "
-     "ONE run_js call, first (0,eval) bootstrap.js then await craftos({timeout_ms?, nodes:["
-     "{program, label?, collect?:true, position?, world?}]}) -> {net, nodes:["
-     "{label, id, output, turtle}]}. A node's `output` is only what its program "
-     "passes to emit(...); print() is NOT captured; call done() to finish. See "
-     "the craftos-sim skill for the full node/turtle/GPS API."),
+    (
+        "picat",
+        "/opt/languages/picat.wasm",
+        "512m",
+        "Picat logic/constraint language. In ONE run_js call, first (0,eval) bootstrap.js then "
+        "await picat(code, args?) -> {stdout, stderr, exitCode}.",
+    ),
+    (
+        "tla",
+        "/opt/languages/tla_checker.wasm",
+        "512m",
+        "TLA+ model checker. In ONE run_js call, first (0,eval) bootstrap.js then "
+        "await tlaplus(spec, opts?) (inline '---- CONFIG ----' supported).",
+    ),
+    (
+        "minizinc",
+        "/opt/languages/minizinc.wasm",
+        "1g",
+        "MiniZinc constraint solver. In ONE run_js call, first (0,eval) bootstrap.js then "
+        "await minizinc(model, {data?, args?}?) -> {status, solutions, ...}.",
+    ),
+    (
+        "autolisp",
+        "/opt/languages/acadlisp.wasm",
+        "512m",
+        "AutoLISP interpreter. In ONE run_js call, first (0,eval) bootstrap.js then "
+        "await autolisp(code) -> {result, output, svg}.",
+    ),
+    (
+        "lua",
+        "/opt/languages/lua.wasm",
+        "512m",
+        "Lua 5.4 VM. In ONE run_js call, first (0,eval) bootstrap.js then "
+        "await lua(code, opts?) -> {result, stdout, error}.",
+    ),
+    (
+        "craftos",
+        "/opt/languages/craftos.wasm",
+        "512m",
+        "ComputerCraft/CC:Tweaked emulator (networked computers + turtles). In "
+        "ONE run_js call, first (0,eval) bootstrap.js then await craftos({timeout_ms?, nodes:["
+        "{program, label?, collect?:true, position?, world?}]}) -> {net, nodes:["
+        "{label, id, output, turtle}]}. A node's `output` is only what its program "
+        "passes to emit(...); print() is NOT captured; call done() to finish. See "
+        "the craftos-sim skill for the full node/turtle/GPS API.",
+    ),
 ]
 
 # V8 heap cap (MB) for the wasm presets. mcp-v8 defaults to 8MB, but
@@ -221,8 +245,7 @@ def _remote_server(session_id: str, approvals: bool) -> dict:
     url = os.environ.get(REMOTE_URL_ENV, "").strip()
     if not url:
         raise ValueError(
-            f"NANOCODEX_SANDBOX=remote requires {REMOTE_URL_ENV} "
-            "(e.g. http://mcp-v8:8080/mcp)"
+            f"NANOCODEX_SANDBOX=remote requires {REMOTE_URL_ENV} (e.g. http://mcp-v8:8080/mcp)"
         )
     # mcp-v8's HTTP mode keys per-session state off X-MCP-Session-Id; a stable
     # id per thread = stateful within the thread, isolated across threads.
@@ -242,7 +265,9 @@ def _remote_server(session_id: str, approvals: bool) -> dict:
     }
 
 
-def sandbox_for(session_id: str, approvals: bool = False, languages: bool | None = None) -> SandboxSpec:
+def sandbox_for(
+    session_id: str, approvals: bool = False, languages: bool | None = None
+) -> SandboxSpec:
     """Per-thread mcp-v8 sandbox for this deployment's preset, with a stable,
     unique --session-id so the sandbox is stateful within the thread and
     isolated across threads.
@@ -270,31 +295,43 @@ def sandbox_for(session_id: str, approvals: bool = False, languages: bool | None
         # writes into the overlay instead of /codex-home/skills; see module
         # docstring). Policy: rw /work + rw /codex-home/skills, ro engines.
         args = [
-            "--policies-json", SKILLS_POLICIES_JSON,
-            "--heap-memory-max", _WASM_HEAP_MEMORY_MAX_MB,
-            "--session-id", session_id,
+            "--policies-json",
+            SKILLS_POLICIES_JSON,
+            "--heap-memory-max",
+            _WASM_HEAP_MEMORY_MAX_MB,
+            "--session-id",
+            session_id,
         ]
         for name, path, cap, desc in _WASM_MODULES:
             args += ["--wasm-module", f"{name}={path}:{cap}"]
             args += ["--wasm-stub-description", f"{name}={desc}"]
     elif preset == "languages":
         args = [
-            "--policies-json", LANGUAGES_POLICIES_JSON,
-            "--heap-memory-max", _WASM_HEAP_MEMORY_MAX_MB,
-            "--fs-store", "dir",
-            "--fs-dir", f"/tmp/agui-fs/{session_id}",
+            "--policies-json",
+            LANGUAGES_POLICIES_JSON,
+            "--heap-memory-max",
+            _WASM_HEAP_MEMORY_MAX_MB,
+            "--fs-store",
+            "dir",
+            "--fs-dir",
+            f"/tmp/agui-fs/{session_id}",
             "--fs-passthrough",
-            "--session-id", session_id,
+            "--session-id",
+            session_id,
         ]
         for name, path, cap, desc in _WASM_MODULES:
             args += ["--wasm-module", f"{name}={path}:{cap}"]
             args += ["--wasm-stub-description", f"{name}={desc}"]
     else:
         args = [
-            "--policies-json", POLICIES_JSON,
-            "--heap-store", "dir",
-            "--heap-dir", f"/tmp/agui-heaps/{session_id}",
-            "--session-id", session_id,
+            "--policies-json",
+            POLICIES_JSON,
+            "--heap-store",
+            "dir",
+            "--heap-dir",
+            f"/tmp/agui-heaps/{session_id}",
+            "--session-id",
+            session_id,
         ]
     return SandboxSpec(
         args=args,

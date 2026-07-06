@@ -29,14 +29,19 @@ PROMPT = os.environ.get(
 
 async def main():
     body = {
-        "threadId": "t-realmodel", "runId": "r1",
+        "threadId": "t-realmodel",
+        "runId": "r1",
         "messages": [{"id": "u1", "role": "user", "content": PROMPT}],
-        "tools": [], "context": [], "state": {}, "forwardedProps": {},
+        "tools": [],
+        "context": [],
+        "state": {},
+        "forwardedProps": {},
     }
     types, tool_names, agent_text = [], [], []
     async with httpx.AsyncClient(timeout=300) as s:
-        async with s.stream("POST", BRIDGE + "/agui", json=body,
-                            headers={"accept": "text/event-stream"}) as resp:
+        async with s.stream(
+            "POST", BRIDGE + "/agui", json=body, headers={"accept": "text/event-stream"}
+        ) as resp:
             async for line in resp.aiter_lines():
                 line = line.strip()
                 if not line.startswith("data:"):

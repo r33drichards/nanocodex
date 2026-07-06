@@ -14,12 +14,10 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any
 
 from ag_ui.core.events import (
     BaseEvent,
     CustomEvent,
-    ReasoningMessageContentEvent,
     ReasoningMessageEndEvent,
     ReasoningMessageStartEvent,
     RunErrorEvent,
@@ -185,25 +183,33 @@ def thread_to_agui_messages(thread: dict) -> list[dict]:
                 out.append({"id": iid, "role": "assistant", "content": item.get("text", "")})
             elif itype == "mcpToolCall":
                 args = item.get("arguments")
-                out.append({
-                    "id": f"{iid}-call",
-                    "role": "assistant",
-                    "content": "",
-                    "toolCalls": [{
+                out.append(
+                    {
+                        "id": f"{iid}-call",
+                        "role": "assistant",
+                        "content": "",
+                        "toolCalls": [
+                            {
+                                "id": iid,
+                                "type": "function",
+                                "function": {
+                                    "name": _tool_name(item),
+                                    "arguments": json.dumps(args)
+                                    if not isinstance(args, str)
+                                    else args,
+                                },
+                            }
+                        ],
+                    }
+                )
+                out.append(
+                    {
                         "id": iid,
-                        "type": "function",
-                        "function": {
-                            "name": _tool_name(item),
-                            "arguments": json.dumps(args) if not isinstance(args, str) else args,
-                        },
-                    }],
-                })
-                out.append({
-                    "id": iid,
-                    "role": "tool",
-                    "toolCallId": iid,
-                    "content": _tool_result_text(item),
-                })
+                        "role": "tool",
+                        "toolCallId": iid,
+                        "content": _tool_result_text(item),
+                    }
+                )
     return out
 
 
@@ -217,10 +223,12 @@ def thread_summaries(page_data: list[dict]) -> list[dict]:
         if not tid:
             continue
         title = t.get("name") or t.get("preview") or tid
-        out.append({
-            "id": tid,
-            "title": title,
-            "status": "archived" if t.get("archived") else "regular",
-            "createdAt": t.get("createdAt"),
-        })
+        out.append(
+            {
+                "id": tid,
+                "title": title,
+                "status": "archived" if t.get("archived") else "regular",
+                "createdAt": t.get("createdAt"),
+            }
+        )
     return out

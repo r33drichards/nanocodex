@@ -9,7 +9,6 @@ model provider; the router only supplies the per-thread mcp-v8 sandbox.
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import uuid
 
@@ -70,12 +69,15 @@ def _approval_handler(nc: Nanocodex, thread_id: str):
         fut: asyncio.Future = asyncio.get_event_loop().create_future()
         _approvals[approval_id] = fut
         # Surface the approval onto the run's SSE stream (frontend renders it).
-        nc.inject_notification(_APPROVAL, {
-            "threadId": thread_id,
-            "approvalId": approval_id,
-            "toolDescription": meta.get("tool_description"),
-            "detail": params.get("message") or params,
-        })
+        nc.inject_notification(
+            _APPROVAL,
+            {
+                "threadId": thread_id,
+                "approvalId": approval_id,
+                "toolDescription": meta.get("tool_description"),
+                "detail": params.get("message") or params,
+            },
+        )
         approved = False
         try:
             approved = await asyncio.wait_for(fut, timeout=APPROVAL_TIMEOUT_SECS)
@@ -83,9 +85,14 @@ def _approval_handler(nc: Nanocodex, thread_id: str):
             approved = False
         finally:
             _approvals.pop(approval_id, None)
-            nc.inject_notification(_APPROVAL_RESOLVED, {
-                "threadId": thread_id, "approvalId": approval_id, "approved": approved,
-            })
+            nc.inject_notification(
+                _APPROVAL_RESOLVED,
+                {
+                    "threadId": thread_id,
+                    "approvalId": approval_id,
+                    "approved": approved,
+                },
+            )
         # MCP elicitation reply Codex understands (accept/decline).
         return {"result": {"action": "accept" if approved else "decline"}}
 
@@ -138,7 +145,9 @@ def _trailing_user_input(messages: list) -> list[dict]:
                     url = _image_url(getattr(part, "source", None))
                     if url:
                         item = {"type": "image", "url": url}
-                        detail = getattr(getattr(part, "metadata", None) or object(), "detail", None)
+                        detail = getattr(
+                            getattr(part, "metadata", None) or object(), "detail", None
+                        )
                         if detail:
                             item["detail"] = detail
                         out.append(item)
@@ -169,7 +178,7 @@ _DEFAULT_INSTRUCTIONS = (
     "`console.log(...)` to produce output. Prefer computing with run_js over doing "
     "arithmetic or data work by hand; do not attempt a shell or local filesystem.\n\n"
     "To show the user a chart, call the `render_plotly` tool with a Plotly figure "
-    "as the arguments: {\"data\": [...traces], \"layout\": {...}}. The chat UI "
+    'as the arguments: {"data": [...traces], "layout": {...}}. The chat UI '
     "renders the figure inline directly from the call arguments (the tool result "
     "is only an ack), so put literal values in `data` — compute them first with "
     "run_js if needed. Prefer a render_plotly chart over an ASCII/text chart "
@@ -225,7 +234,8 @@ async def _resolve_or_create(nc: Nanocodex, agui_thread_id: str, approvals: bool
     # The sandbox preset (and instruction addendum) is deploy-time config —
     # NANOCODEX_SANDBOX matches the runtime image this instance runs.
     resp = await nc.create_thread(
-        sandbox=sandbox_for(sid, approvals), cwd="/tmp",
+        sandbox=sandbox_for(sid, approvals),
+        cwd="/tmp",
         developer_instructions=instructions_for(NANOCODEX_INSTRUCTIONS),
         # Generative UI: the `ui` MCP server's render_* tools are no-op acks
         # whose ARGUMENTS the frontend renders (see agui/ui_tools.py).
@@ -274,15 +284,26 @@ async def agui(request: Request):
             turn_id = turn.get("id")
             async for method, params in notif:
                 if method == _APPROVAL:
-                    yield encoder.encode(CustomEvent(name="approval_request", value={
-                        "approvalId": params["approvalId"],
-                        "toolDescription": params.get("toolDescription"),
-                    }))
+                    yield encoder.encode(
+                        CustomEvent(
+                            name="approval_request",
+                            value={
+                                "approvalId": params["approvalId"],
+                                "toolDescription": params.get("toolDescription"),
+                            },
+                        )
+                    )
                     continue
                 if method == _APPROVAL_RESOLVED:
-                    yield encoder.encode(CustomEvent(name="approval_resolved", value={
-                        "approvalId": params["approvalId"], "approved": params["approved"],
-                    }))
+                    yield encoder.encode(
+                        CustomEvent(
+                            name="approval_resolved",
+                            value={
+                                "approvalId": params["approvalId"],
+                                "approved": params["approved"],
+                            },
+                        )
+                    )
                     continue
                 for e in map_notification(method, params, state):
                     yield encoder.encode(e)
