@@ -54,3 +54,25 @@ Heap persistence is deliberately OFF for these threads: V8 heap snapshots are
 created in a SnapshotCreator isolate that disables WebAssembly, so mcp-v8
 rejects `--heap-store` combined with `--wasm-module` at startup. Cross-call
 state lives in the `/work` filesystem instead.
+
+## Reference codebases (`/opt/languages/codebases/`)
+
+The languages image also bakes the **full upstream source of four
+ComputerCraft / CraftOS projects** read-only under `/opt/languages/codebases/`,
+so the agent can grep and read the real implementations behind the CC:Tweaked
+API (`fs.readdir`/`fs.readFile`). The existing `filesystem.rego` read rules for
+`/opt/languages/` already cover the subtree, so no policy change is needed; the
+`cc-tweaked` skill and the sandbox instruction addendum point the agent at it.
+
+| dir | upstream | what it is |
+|---|---|---|
+| `craftos2` | [MCJack123/craftos2](https://github.com/MCJack123/craftos2) | CraftOS-PC, the CC:Tweaked emulator (C++) — what the `craftos` engine is built from |
+| `cobalt` | [cc-tweaked/Cobalt](https://github.com/cc-tweaked/Cobalt) | the Lua VM (Java) CC:Tweaked runs on — Lua-compat ground truth |
+| `reconnected-docs` | [ReconnectedCC/docs](https://github.com/ReconnectedCC/docs) | docs for the ReconnectedCC server (APIs, guides, server-specific additions) |
+| `re-plethora` | [ReconnectedCC/Re-Plethora](https://github.com/ReconnectedCC/Re-Plethora) | the Plethora peripherals / neural-interface mod (Java) |
+
+Defined in `flake.nix` (`languagesCodebasesMeta` / `languagesCodebases`),
+fetched with `pkgs.fetchgit` pinned by commit, `fetchSubmodules = false` (so
+submodule paths stay empty dirs). A generated `codebases/README.md` records the
+pinned rev of each. To bump one: change its `rev`, set `hash = lib.fakeHash`,
+rebuild, and paste back the hash nix reports.

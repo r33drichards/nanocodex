@@ -45,6 +45,17 @@ end
 - For **common workflows** (require/libraries, startup, GPS, audio, HTTP local IPs), read `references/guides/guides.md`.
 - If you can run code, note CC Lua can't execute in this sandbox (it needs the mod or an emulator like CraftOS-PC); reason from the reference and write correct, idiomatic CraftOS Lua.
 
+## Local reference codebases (full upstream source)
+
+On the languages/skills sandbox, the **full source of four CC / CraftOS projects** is mounted **read-only** at `/opt/languages/codebases/` (browse with `fs.readdir('/opt/languages/codebases')`, read with `fs.readFile`). Use it as ground truth when the distilled reference above (or the docs at tweaked.cc) isn't enough — e.g. to check exact behaviour, an undocumented method, a peripheral's real implementation, or a Lua-compat edge case. Grep/read it; it is read-only, so keep scratch work under `/work`.
+
+- **`codebases/craftos2/`** — [MCJack123/craftos2](https://github.com/MCJack123/craftos2), CraftOS-PC (the CC:Tweaked emulator, C++). This is what the `craftos` engine is built from, so it's the closest reference for how APIs/peripherals actually behave. Look under `src/` (`apis/`, `peripheral/`, `terminal/`).
+- **`codebases/cobalt/`** — [cc-tweaked/Cobalt](https://github.com/cc-tweaked/Cobalt), the Lua VM (Java) CC:Tweaked runs on. Ground truth for the "Lua 5.1 + selected 5.2/5.3" quirks — string/number coercion, metatables, `load`/`pcall`, coroutine semantics.
+- **`codebases/reconnected-docs/`** — [ReconnectedCC/docs](https://github.com/ReconnectedCC/docs), docs for the ReconnectedCC server: CC APIs, guides, and server-specific additions (ReconnectedChat, custom peripherals) you won't find on tweaked.cc.
+- **`codebases/re-plethora/`** — [ReconnectedCC/Re-Plethora](https://github.com/ReconnectedCC/Re-Plethora), the Plethora peripherals / neural-interface mod (Java). Source for the extra modules and methods Plethora exposes to CC computers (manipulators, scanners, sensors, `modules`).
+
+(Submodules aren't included — those paths are empty dirs. `codebases/README.md` lists the pinned upstream commit for each.)
+
 ## Reference file map
 
 ```

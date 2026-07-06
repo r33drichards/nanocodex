@@ -1,7 +1,9 @@
 package mcp.filesystem
 
 # `skills` preset: REAL-filesystem policy (no per-thread snapshot mount, so
-# writes land on the container fs). Read-only language assets, a read+write
+# writes land on the container fs). Read-only language assets (including the
+# bundled reference codebases under /opt/languages/codebases — the
+# /opt/languages/ read rules below already cover that subtree), a read+write
 # scratch area under /work (shared across threads), and read+write access to
 # the agent's own skill library at /codex-home/skills so threads can inspect
 # and improve their skills. Everything else is denied — in particular the
