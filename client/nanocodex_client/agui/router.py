@@ -427,6 +427,22 @@ async def steer(agui_thread_id: str, request: Request):
     return {"steered": True}
 
 
+@router.post("/agui/threads/{agui_thread_id}/interrupt")
+async def interrupt(agui_thread_id: str):
+    """Side-channel: abort the thread's in-flight turn. Codex stops the turn and
+    emits turn/completed (status interrupted), which closes the run's SSE stream
+    normally, so the frontend sees the run finish."""
+    b = store.get(agui_thread_id)
+    if not b:
+        raise HTTPException(status_code=404, detail="unknown thread")
+    nc = await Nanocodex.connect()
+    try:
+        await nc.interrupt_turn(b.codex_thread_id)
+    finally:
+        await nc.close()
+    return {"interrupted": True}
+
+
 @router.post("/agui/approvals/{approval_id}")
 async def resolve_approval(approval_id: str, request: Request):
     """Side-channel: answer a pending HITL approval surfaced on a run stream.

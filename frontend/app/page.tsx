@@ -159,6 +159,21 @@ export default function Page() {
     [agent],
   );
 
+  // Interrupt: abort the in-flight turn via the bridge side-channel (codex
+  // `turn/interrupt`), addressed by `agent.threadId` like steer. Codex ends the
+  // turn and the run's SSE stream closes, so the UI returns to idle.
+  const interrupt = useCallback(async () => {
+    try {
+      const r = await fetch(
+        `${BRIDGE}/agui/threads/${encodeURIComponent(agent.threadId)}/interrupt`,
+        { method: "POST" },
+      );
+      return r.ok;
+    } catch {
+      return false; // bridge unreachable — caller falls back to a client abort
+    }
+  }, [agent]);
+
   const attachments = useMemo(() => new SimpleImageAttachmentAdapter(), []);
 
   const runtime = useAgUiRuntime({
@@ -177,7 +192,7 @@ export default function Page() {
           <ThreadMetaContext.Provider value={threadMeta}>
             <ThreadListSidebar />
           </ThreadMetaContext.Provider>
-          <NanocodexThread onRunComplete={onRunComplete} steer={steer} />
+          <NanocodexThread onRunComplete={onRunComplete} steer={steer} interrupt={interrupt} />
         </div>
       </div>
     </AssistantRuntimeProvider>

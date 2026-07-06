@@ -39,9 +39,9 @@ runtime/proxy layer. `@assistant-ui/react-ag-ui`'s `useAgUiRuntime` drives it.
   `js.get_execution_output` polls) render via a `tools.Fallback` `RunJsCard`
   that unwraps the MCP result envelope to the `data` (stdout/value) field.
 
-## Queue & steer (mid-turn input)
+## Queue, steer & interrupt (mid-turn input)
 
-The composer stays live while a turn is streaming, with two verbs:
+The composer stays live while a turn is streaming, with three verbs:
 
 - **⏎ (Enter)** — *queue*: the text is held locally (shown as a removable
   "queued" chip) and sent as the **next turn** when the current run finishes,
@@ -54,12 +54,19 @@ The composer stays live while a turn is streaming, with two verbs:
   thread reload). When nothing is running, ⌘⏎ is a normal send. If the steer
   fails (turn just ended, bridge down), the text falls back to the queue so it
   isn't lost.
+- **Stop** — *interrupt*: aborts the **in-flight turn** via the bridge
+  side-channel (`POST /agui/threads/{id}/interrupt` → codex `turn/interrupt`).
+  Codex ends the turn (status interrupted) and the run's SSE stream closes, so
+  the UI returns to idle. Pending queued/steered input is **discarded** (Stop
+  means "stop", not "stop then send the queue"). If the backend interrupt fails
+  (unknown method, bridge down), it falls back to a client-side stream abort
+  (`thread.cancelRun()`) so the composer still frees.
 
-While running, the Send button becomes **Queue** and a **Steer** button appears
-next to it (mouse equivalents of ⏎ / ⌘⏎). assistant-ui's *native* queue
-machinery isn't used: `useAgUiRuntime` doesn't expose the external store's
-`queue` adapter, so the queue lives in the `Composer` component; a thread
-switch discards it.
+While running, the Send button becomes **Queue** and **Steer** and **Stop**
+buttons appear next to it (mouse equivalents of ⏎ / ⌘⏎ / interrupt).
+assistant-ui's *native* queue machinery isn't used: `useAgUiRuntime` doesn't
+expose the external store's `queue` adapter, so the queue lives in the
+`Composer` component; a thread switch discards it.
 
 ## Generative UI (`render_plotly`)
 
@@ -153,8 +160,8 @@ FRONTEND_URL=http://localhost:3100 client/.venv/bin/python frontend/e2e/test_ass
   rehydrates from codex history.
 
 `data-testid` hooks: `thread-list-item`, `new-thread-btn`, `composer-input`,
-`composer-send`, `steer-btn`, `composer-queue`, `queued-chip`, `queued-remove`,
-`steered-chip`, `attach-btn`, `attach-preview`, `user-message`,
+`composer-send`, `steer-btn`, `interrupt-btn`, `composer-queue`, `queued-chip`,
+`queued-remove`, `steered-chip`, `attach-btn`, `attach-preview`, `user-message`,
 `assistant-message`, `run-js-card`, `run-js-status`, `run-js-code`,
 `run-js-result`, `plotly-card`, `plotly-chart`, `plotly-pending`.
 
@@ -165,6 +172,8 @@ assistant-ui's native `useAgUiInterrupts` (which `@assistant-ui/react-ag-ui`
 supports) rather than the old CUSTOM-event side channel — that requires the
 bridge to emit AG-UI interrupt events. The bridge's approval plumbing
 (`/agui/approvals`, `tools_approval="prompt"`) is still there. Mid-turn
-**steer** IS wired (see *Queue & steer* above) via the bridge's
-`/agui/threads/{id}/steer` side-channel rather than `useAgUiSteerAway`, whose
-semantics differ (it cancels the run; codex steer injects without cancelling).
+**steer** and **interrupt** ARE wired (see *Queue, steer & interrupt* above)
+via the bridge's `/agui/threads/{id}/steer` and `/interrupt` side-channels
+rather than `useAgUiSteerAway`, whose semantics differ (it cancels the run;
+codex steer injects without cancelling, and codex interrupt aborts the turn
+server-side rather than just dropping the client stream).

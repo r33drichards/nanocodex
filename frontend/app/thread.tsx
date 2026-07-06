@@ -366,18 +366,27 @@ function ComposerAttachments() {
   );
 }
 
-// ── composer (text + image attach + ⌘V paste + queue/steer) ──────────────────
-// While a turn is streaming, the composer stays live with two verbs:
+// ── composer (text + image attach + ⌘V paste + queue/steer/interrupt) ─────────
+// While a turn is streaming, the composer stays live with three verbs:
 //   ⏎    queue — hold the text locally and send it as the NEXT turn (one
 //        queued message per turn, in order) once the current run finishes;
 //   ⌘/Ctrl+⏎ steer — inject the text into the IN-FLIGHT turn via the bridge's
 //        /steer side-channel (codex turn/steer); the turn keeps running.
-// When idle, both are just a normal send. (assistant-ui's native queue can't
-// be used: useAgUiRuntime doesn't expose the external store's queue adapter.)
+//   Stop — abort the in-flight turn via the bridge's /interrupt side-channel
+//        (codex turn/interrupt); pending queued/steered input is discarded.
+// When idle, ⏎ and ⌘⏎ are just a normal send. (assistant-ui's native queue
+// can't be used: useAgUiRuntime doesn't expose the external store's queue
+// adapter.)
 let nextChipId = 0;
 type Chip = { id: number; text: string };
 
-function Composer({ steer }: { steer: (text: string) => Promise<boolean> }) {
+function Composer({
+  steer,
+  interrupt,
+}: {
+  steer: (text: string) => Promise<boolean>;
+  interrupt: () => Promise<boolean>;
+}) {
   const composer = useComposerRuntime();
   const thread = useThreadRuntime();
   const fileRef = useRef<HTMLInputElement>(null);
@@ -386,6 +395,7 @@ function Composer({ steer }: { steer: (text: string) => Promise<boolean> }) {
   const [canSend, setCanSend] = useState(false);
   const [queued, setQueued] = useState<Chip[]>([]);
   const [steered, setSteered] = useState<Chip[]>([]);
+  const [interrupting, setInterrupting] = useState(false);
   const queueRef = useRef<Chip[]>(queued);
   queueRef.current = queued;
 
@@ -410,6 +420,7 @@ function Composer({ steer }: { steer: (text: string) => Promise<boolean> }) {
       setRunning(isRunning);
       if (!isRunning) {
         setSteered([]);
+        setInterrupting(false);
         const [head, ...rest] = queueRef.current;
         if (head) {
           queueRef.current = rest;
@@ -457,6 +468,20 @@ function Composer({ steer }: { steer: (text: string) => Promise<boolean> }) {
       setSteered((s) => s.filter((c) => c.id !== chip.id));
       enqueue(t);
     }
+  };
+
+  // Interrupt (Stop) the in-flight turn. Discard pending queued/steered input
+  // (the user is stopping, so don't auto-flush the queue when the turn ends),
+  // ask the backend to abort the codex turn, and if that fails (unknown method,
+  // bridge down) fall back to a client-side stream abort so the UI still frees.
+  const interruptNow = async () => {
+    if (!thread.getState().isRunning || interrupting) return;
+    setInterrupting(true);
+    queueRef.current = [];
+    setQueued([]);
+    setSteered([]);
+    const ok = await interrupt();
+    if (!ok) thread.cancelRun();
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -551,6 +576,16 @@ function Composer({ steer }: { steer: (text: string) => Promise<boolean> }) {
           <>
             <button
               type="button"
+              className="composer-stop"
+              data-testid="interrupt-btn"
+              title="Stop the in-flight turn"
+              disabled={interrupting}
+              onClick={() => void interruptNow()}
+            >
+              ■ Stop
+            </button>
+            <button
+              type="button"
               className="composer-steer"
               data-testid="steer-btn"
               title="Steer the in-flight turn (⌘⏎)"
@@ -603,9 +638,11 @@ function useRefreshOnIdle(onIdle: () => void) {
 export function NanocodexThread({
   onRunComplete,
   steer,
+  interrupt,
 }: {
   onRunComplete: () => void;
   steer: (text: string) => Promise<boolean>;
+  interrupt: () => Promise<boolean>;
 }) {
   useRefreshOnIdle(onRunComplete);
   return (
@@ -618,7 +655,7 @@ export function NanocodexThread({
         </ThreadPrimitive.Empty>
         <ThreadPrimitive.Messages components={{ UserMessage, AssistantMessage }} />
       </ThreadPrimitive.Viewport>
-      <Composer steer={steer} />
+      <Composer steer={steer} interrupt={interrupt} />
     </ThreadPrimitive.Root>
   );
 }

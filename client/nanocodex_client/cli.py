@@ -3,6 +3,7 @@
 nanocodex create [--bearer HOST TOKEN] [--oauth RULE] [--model M]
 nanocodex send THREAD_ID PROMPT        # run a turn, stream to completion
 nanocodex steer THREAD_ID PROMPT       # inject into the in-flight turn
+nanocodex interrupt THREAD_ID          # abort the in-flight turn
 nanocodex messages THREAD_ID           # full transcript (thread/read)
 nanocodex subscribe THREAD_ID          # live-tail notifications
 nanocodex threads                      # list threads
@@ -186,6 +187,18 @@ def steer(thread_id: str, prompt: str, url: str = _url_opt, token: Optional[str]
         async with await Nanocodex.connect(url, token) as nc:
             await nc.steer_turn(thread_id, prompt)
             typer.echo("steered")
+
+    _run(go())
+
+
+@app.command()
+def interrupt(thread_id: str, url: str = _url_opt, token: Optional[str] = _token_opt):
+    """Interrupt (abort) the thread's in-flight turn."""
+
+    async def go():
+        async with await Nanocodex.connect(url, token) as nc:
+            await nc.interrupt_turn(thread_id)
+            typer.echo("interrupted")
 
     _run(go())
 

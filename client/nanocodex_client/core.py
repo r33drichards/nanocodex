@@ -502,6 +502,11 @@ class Nanocodex:
             },
         )
 
+    async def interrupt_turn(self, thread_id: str) -> Any:
+        """Interrupt (abort) the thread's in-flight turn. Codex stops the turn
+        and reports it as TURN_STATUS_INTERRUPTED (emitting turn/completed)."""
+        return await self.request("turn/interrupt", {"threadId": thread_id})
+
     async def run_turn(
         self, thread_id: str, text: str, timeout: float = 600.0, on_event=None
     ) -> dict:

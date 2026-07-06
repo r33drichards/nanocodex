@@ -342,6 +342,27 @@ body {
   cursor: default;
 }
 
+.composer-stop {
+  border: 1px solid #d64545;
+  background: #fff5f5;
+  color: #d64545;
+  border-radius: 8px;
+  padding: 0.55rem 0.8rem;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.composer-stop:hover:not(:disabled) {
+  background: #ffecec;
+}
+
+.composer-stop:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 /* queued (next turn) / steered (in-flight turn) message chips */
 .composer-queue {
   display: flex;

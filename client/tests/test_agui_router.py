@@ -24,6 +24,7 @@ class FakeNC:
     create_calls: list[dict] = []
     resumed: list[str] = []
     read_calls: list[str] = []
+    interrupted: list[str] = []
 
     def __init__(self):
         self._counter = 0
@@ -82,6 +83,10 @@ class FakeNC:
     async def start_turn(self, thread_id, input=None):
         return {"id": "turn-1"}
 
+    async def interrupt_turn(self, thread_id):
+        FakeNC.interrupted.append(thread_id)
+        return {}
+
     def notifications(self, thread_id):
         async def gen():
             yield ("turn/completed", {"turn": {"id": "turn-1"}})
@@ -97,6 +102,7 @@ class RouterTest(unittest.TestCase):
         FakeNC.existing = {"codex-a", "codex-b"}
         FakeNC.created, FakeNC.resumed, FakeNC.read_calls = [], [], []
         FakeNC.create_calls = []
+        FakeNC.interrupted = []
         R.store = R.ThreadStore()  # fresh in-memory bindings per test
         self._env = os.environ.pop("NANOCODEX_SANDBOX", None)
         R._active.clear()
@@ -200,6 +206,19 @@ class RouterTest(unittest.TestCase):
         r = self.client.post("/agui", json=self._run_body("codex-a", "r1"))
         self.assertEqual(r.status_code, 409)
         self.assertIn("active turn", r.json()["detail"])
+
+    def test_interrupt_unknown_thread_404(self):
+        r = self.client.post("/agui/threads/never-seen/interrupt")
+        self.assertEqual(r.status_code, 404)
+
+    def test_interrupt_calls_codex_turn_interrupt(self):
+        # a bound thread (as after a run start) can be interrupted; the endpoint
+        # resolves the codex id and calls turn/interrupt on it.
+        R.store.bind("local-xyz", "codex-a", "s1")
+        r = self.client.post("/agui/threads/local-xyz/interrupt")
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()["interrupted"])
+        self.assertEqual(FakeNC.interrupted, ["codex-a"])
 
     def test_codex_id_adoption_contract(self):
         # A brand-new client id runs once; the frontend then resolves the
