@@ -38,9 +38,6 @@ from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 
 from ..core import Nanocodex
-from .sandbox import instructions_for, sandbox_for
-from .threads import ThreadStore
-from .ui_tools import ui_mcp_server
 
 AGENTS_URL_ENV = "NANOCODEX_AGENTS_URL"
 AGENT_HEADER = "X-Nanocodex-Agent"
@@ -163,11 +160,24 @@ class AgentRegistry:
     def has_waiters(self, agent_id: str) -> bool:
         return self._waiters.get(agent_id, 0) > 0
 
-    async def wait_idle(self, agent_id: str, timeout: float) -> AgentInfo | None:
-        """Poll until the agent leaves running/spawning (or timeout). Registers
-        as a waiter so a completion during the wait is returned here instead of
-        announced to the parent (the caller relays it)."""
+    def add_waiter(self, agent_id: str) -> None:
         self._waiters[agent_id] = self._waiters.get(agent_id, 0) + 1
+
+    def remove_waiter(self, agent_id: str) -> None:
+        n = self._waiters.get(agent_id, 1) - 1
+        if n <= 0:
+            self._waiters.pop(agent_id, None)
+        else:
+            self._waiters[agent_id] = n
+
+    async def wait_idle(self, agent_id: str, timeout: float) -> AgentInfo | None:
+        """Poll (0.25s — simple and bounded; an Event would need careful
+        clear/reset around re-run turns) until the agent leaves
+        running/spawning, or timeout. Registers as a waiter so a completion
+        during the wait is returned here instead of announced to the parent
+        (the caller relays it). Checks status before the deadline, so
+        timeout=0 means "report current state now"."""
+        self.add_waiter(agent_id)
         try:
             loop = asyncio.get_running_loop()
             deadline = loop.time() + timeout
@@ -179,11 +189,7 @@ class AgentRegistry:
                     return info
                 await asyncio.sleep(0.25)
         finally:
-            n = self._waiters.get(agent_id, 1) - 1
-            if n <= 0:
-                self._waiters.pop(agent_id, None)
-            else:
-                self._waiters[agent_id] = n
+            self.remove_waiter(agent_id)
 
     def annotate_summaries(self, summaries: list[dict]) -> None:
         """Attach parent/agent metadata to `/agui/threads` summaries so the
@@ -275,28 +281,14 @@ def _resolve_codex(agent_key: str) -> str:
 
 
 async def _create_agent_thread(nc, info: AgentInfo) -> str:
-    """Create the sub-agent's codex thread: same deploy-time sandbox preset as
-    any thread, plus the ui server, its own `agents` server (so it can talk
-    back), and a subagent preamble. Approvals are never enabled — sub-agents
-    run headless."""
-    R = _router()
-    sid = ThreadStore.new_session_id()
-    extra = {"ui": ui_mcp_server("approve")}
-    decl = agents_server_decl(info.agent_id)
-    if decl is not None:
-        extra["agents"] = decl
-    instructions = (
-        instructions_for(R.NANOCODEX_INSTRUCTIONS)
-        + AGENTS_INSTRUCTIONS
-        + subagent_preamble(info)
-    )
-    resp = await nc.create_thread(
-        sandbox=sandbox_for(sid, approvals=False), cwd="/tmp",
-        developer_instructions=instructions, extra_mcp_servers=extra,
-    )
-    codex_tid = resp["thread"]["id"]
-    R.store.bind(info.agent_id, codex_tid, sid)
-    return codex_tid
+    """Create the sub-agent's codex thread via the router's shared creation
+    path (same sandbox preset, ui + agents servers, base instructions — with
+    the sub-thread's own identity in its agents header, so it can talk back),
+    plus a subagent preamble. Approvals are never enabled — sub-agents run
+    headless."""
+    return await _router()._create_bound_thread(
+        nc, info.agent_id, approvals=False,
+        extra_instructions=subagent_preamble(info))
 
 
 async def _deliver(target_codex_id: str, note: dict) -> str:
@@ -319,33 +311,45 @@ async def _deliver(target_codex_id: str, note: dict) -> str:
 async def _run_agent_turn(nc, info: AgentInfo, text: str, kind: str) -> None:
     """Run one turn on a sub-agent's thread to completion (bridge-side
     background task), record the outcome, and announce it to the parent —
-    unless a waiter (spawn/send/wait with wait:true) is consuming it."""
+    unless a waiter (spawn/send/wait with wait:true) is consuming it.
+    `_spawn_turn_task` already marked the thread active/running."""
     R = _router()
     codex_tid = info.codex_thread_id
-    registry.touch(info)
-    R._active.add(codex_tid)
+    # Notes queued for THIS agent while it was idle (e.g. a steer that lost
+    # the race with its previous turn ending) ride along with the new input.
+    pending = registry.drain_inbox(codex_tid)
+    if pending:
+        text = format_notes(pending) + "\n\n" + text
     try:
         res = await nc.run_turn(codex_tid, text, timeout=TURN_TIMEOUT)
         final = "\n\n".join(m for m in res["agent_messages"] if m) or "(no reply)"
-        info.status, info.result, info.error = "idle", final, None
         note = {"from": info.agent_id, "name": info.name, "kind": kind,
                 "text": final, "error": False, "ts": time.time()}
+        # Status flip + waiter snapshot in one synchronous block: a waiter
+        # that wakes during the awaits below already consumed this outcome,
+        # and must not ALSO get it announced (duplicate report).
+        info.status, info.result, info.error = "idle", final, None
+        announce = not registry.has_waiters(info.agent_id)
     except Exception as err:
-        info.status, info.error = "failed", f"{type(err).__name__}: {err}"
         note = {"from": info.agent_id, "name": info.name, "kind": kind,
-                "text": info.error, "error": True, "ts": time.time()}
+                "text": f"{type(err).__name__}: {err}", "error": True, "ts": time.time()}
+        info.status, info.error = "failed", note["text"]
+        announce = not registry.has_waiters(info.agent_id)
     finally:
         R._active.discard(codex_tid)
         registry.touch(info)
         await nc.close()
-    if not registry.has_waiters(info.agent_id):
+    if announce:
         await _deliver(info.parent_codex_id, note)
 
 
 def _spawn_turn_task(nc, info: AgentInfo, text: str, kind: str) -> None:
-    # Mark running synchronously (not in the task) so a send_to_agent racing
-    # the task start steers the in-flight turn instead of starting a second.
+    # Mark running and take the turn guard synchronously (not in the task):
+    # a send_to_agent racing the task start then steers the in-flight turn
+    # instead of starting a second, and a user POST /agui to this sub-thread
+    # 409s instead of racing it.
     info.status = "running"
+    _router()._active.add(info.codex_thread_id)
     t = asyncio.get_running_loop().create_task(_run_agent_turn(nc, info, text, kind))
     _tasks.add(t)
     t.add_done_callback(_tasks.discard)
@@ -418,13 +422,15 @@ AGENT_TOOLS: list[dict] = [
 
 
 def _wait_timeout(args: dict) -> float:
+    raw = args.get("timeout_sec")
     try:
-        t = float(args.get("timeout_sec") or DEFAULT_WAIT_SECS)
+        t = DEFAULT_WAIT_SECS if raw is None else float(raw)
     except (TypeError, ValueError):
         t = DEFAULT_WAIT_SECS
-    # Stay under the agents server's tool_timeout_sec so the model gets a
-    # structured "still running" answer instead of a dead tool call.
-    return max(1.0, min(t, 570.0))
+    # 0 = "report current state now"; cap under the agents server's
+    # tool_timeout_sec so the model gets a structured "still running" answer
+    # instead of a dead tool call.
+    return max(0.0, min(t, 570.0))
 
 
 def _wait_payload(info: AgentInfo | None) -> dict:
@@ -434,6 +440,10 @@ def _wait_payload(info: AgentInfo | None) -> dict:
     if info.status == "running":
         out["note"] = "still running — call wait_agent again to keep waiting"
     return out
+
+
+async def _wait_and_report(agent_id: str, args: dict) -> dict:
+    return _wait_payload(await registry.wait_idle(agent_id, _wait_timeout(args)))
 
 
 async def _tool_spawn(caller_key: str, args: dict) -> dict:
@@ -446,16 +456,30 @@ async def _tool_spawn(caller_key: str, args: dict) -> dict:
     if depth > MAX_DEPTH:
         raise ToolError(f"spawn depth limit reached (AGUI_AGENT_MAX_DEPTH={MAX_DEPTH})")
     children = registry.children_of(caller_key)
-    if len(children) >= MAX_CHILDREN:
+    # Failed spawns/turns don't count against the cap — only live children do.
+    if len([c for c in children if c.status != "failed"]) >= MAX_CHILDREN:
         raise ToolError(f"subagent limit reached (AGUI_AGENT_MAX_CHILDREN={MAX_CHILDREN})")
+
+    nc = await Nanocodex.connect()
+    if _router()._codex_id_for(caller_key) is None:
+        # The header key didn't resolve through the bindings, so parent_codex
+        # is a guess. Verify it names a real thread now, or reports from this
+        # sub-agent would be queued under a key that is never drained (this
+        # happens to pre-restart threads when AGUI_BINDINGS_PATH is unset).
+        try:
+            await nc.resume_thread(parent_codex)
+        except Exception:
+            await nc.close()
+            raise ToolError(
+                "cannot resolve the calling thread (bridge restarted?) — "
+                "reports could not be delivered back; set AGUI_BINDINGS_PATH "
+                "to persist thread bindings, or start a new thread")
 
     agent_id = f"agent-{uuid.uuid4().hex[:12]}"
     name = (args.get("name") or "").strip() or f"subagent-{len(children) + 1}"
     info = AgentInfo(agent_id=agent_id, parent_key=caller_key,
                      parent_codex_id=parent_codex, name=name, task=task, depth=depth)
     registry.add(info)
-
-    nc = await Nanocodex.connect()
     try:
         info.codex_thread_id = await _create_agent_thread(nc, info)
     except Exception as err:
@@ -467,8 +491,7 @@ async def _tool_spawn(caller_key: str, args: dict) -> dict:
     _spawn_turn_task(nc, info, task, kind="report")  # the task owns nc now
 
     if args.get("wait"):
-        info = await registry.wait_idle(agent_id, _wait_timeout(args)) or info
-        return _wait_payload(info)
+        return await _wait_and_report(agent_id, args)
     return {
         "agentId": agent_id, "name": name, "threadId": info.codex_thread_id,
         "status": info.status,
@@ -498,16 +521,36 @@ async def _tool_send(caller_key: str, args: dict) -> dict:
         raise ToolError(f"unknown agent_id {target!r} (see list_agents)")
     if not info.codex_thread_id:
         raise ToolError(f"agent {target!r} has no thread (spawn failed?)")
+    wait = bool(args.get("wait", True))
 
-    if info.status == "running":
-        nc = await Nanocodex.connect()
+    # Busy if a bridge-driven turn is running OR any turn holds the thread
+    # (e.g. the user is talking to this sub-agent right now): steer it.
+    if info.status == "running" or info.codex_thread_id in _router()._active:
+        # Register as a waiter BEFORE steering: if the turn completes during
+        # the steer, the report is returned here instead of also being
+        # announced to the parent (which would deliver it twice).
+        if wait:
+            registry.add_waiter(target)
         try:
-            await nc.steer_turn(info.codex_thread_id, message)
+            delivered = "steered"
+            nc = await Nanocodex.connect()
+            try:
+                await nc.steer_turn(info.codex_thread_id, message)
+            except Exception:
+                # The turn ended (or never started) under us — queue the
+                # message; the agent's next turn drains it.
+                registry.inbox_push(info.codex_thread_id, {
+                    "from": "parent", "name": "parent", "kind": "message",
+                    "text": message, "error": False, "ts": time.time()})
+                delivered = "queued"
+            finally:
+                await nc.close()
+            if wait:
+                return await _wait_and_report(target, args)
+            return {"delivered": delivered, "agentId": target, "status": info.status}
         finally:
-            await nc.close()
-        if args.get("wait", True):
-            return _wait_payload(await registry.wait_idle(target, _wait_timeout(args)) or info)
-        return {"delivered": "steered", "agentId": target, "status": info.status}
+            if wait:
+                registry.remove_waiter(target)
 
     nc = await Nanocodex.connect()
     try:
@@ -516,8 +559,8 @@ async def _tool_send(caller_key: str, args: dict) -> dict:
         await nc.close()
         raise ToolError(f"cannot reach agent thread: {err}")
     _spawn_turn_task(nc, info, message, kind="reply")
-    if args.get("wait", True):
-        return _wait_payload(await registry.wait_idle(target, _wait_timeout(args)) or info)
+    if wait:
+        return await _wait_and_report(target, args)
     return {"delivered": "started", "agentId": target, "status": info.status}
 
 
@@ -534,7 +577,7 @@ async def _tool_wait(caller_key: str, args: dict) -> dict:
     info = registry.get(target)
     if info is None or info.parent_key != caller_key:
         raise ToolError(f"unknown agent_id {target!r} (see list_agents)")
-    return _wait_payload(await registry.wait_idle(target, _wait_timeout(args)) or info)
+    return await _wait_and_report(target, args)
 
 
 _TOOL_HANDLERS = {

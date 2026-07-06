@@ -203,6 +203,36 @@ def _codex_id_for(agui_thread_id: str) -> str | None:
     return b.codex_thread_id if b else None
 
 
+async def _create_bound_thread(nc: Nanocodex, agui_thread_id: str, approvals: bool,
+                               extra_instructions: str = "") -> str:
+    """Create a codex thread with this deployment's standard per-thread config
+    and bind it under `agui_thread_id`. The ONE place that config is composed —
+    the agents module reuses it for sub-agent threads, so main threads and
+    sub-agents can't drift apart."""
+    sid = ThreadStore.new_session_id()
+    # Generative UI: the `ui` MCP server's render_* tools are no-op acks
+    # whose ARGUMENTS the frontend renders (see agui/ui_tools.py).
+    extra_mcp_servers = {"ui": ui_mcp_server("prompt" if approvals else "approve")}
+    instructions = instructions_for(NANOCODEX_INSTRUCTIONS)
+    # Sub-agents (openclaw-style sessions): when NANOCODEX_AGENTS_URL is set,
+    # the thread gets the bridge-hosted `agents` MCP server, addressed back to
+    # this thread via the X-Nanocodex-Agent header (see agui/agents.py).
+    agents_decl = agents_server_decl(agui_thread_id, approvals)
+    if agents_decl is not None:
+        extra_mcp_servers["agents"] = agents_decl
+        instructions += AGENTS_INSTRUCTIONS
+    # The sandbox preset (and instruction addendum) is deploy-time config —
+    # NANOCODEX_SANDBOX matches the runtime image this instance runs.
+    resp = await nc.create_thread(
+        sandbox=sandbox_for(sid, approvals), cwd="/tmp",
+        developer_instructions=instructions + extra_instructions,
+        extra_mcp_servers=extra_mcp_servers,
+    )
+    codex_tid = resp["thread"]["id"]
+    store.bind(agui_thread_id, codex_tid, sid)
+    return codex_tid
+
+
 async def _resolve_or_create(nc: Nanocodex, agui_thread_id: str, approvals: bool) -> str:
     """Map an AG-UI thread id to a live Codex thread, subscribing this
     connection to its notifications. Resolution order:
@@ -227,28 +257,7 @@ async def _resolve_or_create(nc: Nanocodex, agui_thread_id: str, approvals: bool
         return agui_thread_id
     except RpcError:
         pass
-    sid = ThreadStore.new_session_id()
-    # Generative UI: the `ui` MCP server's render_* tools are no-op acks
-    # whose ARGUMENTS the frontend renders (see agui/ui_tools.py).
-    extra_mcp_servers = {"ui": ui_mcp_server("prompt" if approvals else "approve")}
-    instructions = instructions_for(NANOCODEX_INSTRUCTIONS)
-    # Sub-agents (openclaw-style sessions): when NANOCODEX_AGENTS_URL is set,
-    # the thread gets the bridge-hosted `agents` MCP server, addressed back to
-    # this thread via the X-Nanocodex-Agent header (see agui/agents.py).
-    agents_decl = agents_server_decl(agui_thread_id, approvals)
-    if agents_decl is not None:
-        extra_mcp_servers["agents"] = agents_decl
-        instructions += AGENTS_INSTRUCTIONS
-    # The sandbox preset (and instruction addendum) is deploy-time config —
-    # NANOCODEX_SANDBOX matches the runtime image this instance runs.
-    resp = await nc.create_thread(
-        sandbox=sandbox_for(sid, approvals), cwd="/tmp",
-        developer_instructions=instructions,
-        extra_mcp_servers=extra_mcp_servers,
-    )
-    codex_tid = resp["thread"]["id"]
-    store.bind(agui_thread_id, codex_tid, sid)
-    return codex_tid
+    return await _create_bound_thread(nc, agui_thread_id, approvals)
 
 
 @router.post("/agui")
@@ -259,9 +268,11 @@ async def agui(request: Request):
     if not user_input:
         raise HTTPException(status_code=400, detail="no new user message in RunAgentInput")
 
-    # Reject a second concurrent turn on a known-busy thread up front.
+    # Reject a second concurrent turn on a known-busy thread up front. The
+    # raw-id check covers threads addressed by codex id without a binding —
+    # notably sub-agent threads mid background turn (see agui/agents.py).
     binding = store.get(inp.thread_id)
-    if binding and binding.codex_thread_id in _active:
+    if inp.thread_id in _active or (binding and binding.codex_thread_id in _active):
         raise HTTPException(status_code=409, detail="thread has an active turn (use steer)")
 
     encoder = EventEncoder(accept=request.headers.get("accept"))
@@ -272,15 +283,22 @@ async def agui(request: Request):
     async def stream():
         nc = None
         codex_tid = None
+        owns_turn = False
         try:
             nc = await Nanocodex.connect()
             codex_tid = await _resolve_or_create(nc, inp.thread_id, approvals)
+            # Re-check after resolution: the pre-check can't see through an
+            # unresolved id, and a sub-agent background turn may hold the
+            # thread. Never discard a guard entry another turn owns.
+            if codex_tid in _active:
+                raise RuntimeError("thread has an active turn (use steer)")
+            _active.add(codex_tid)
+            owns_turn = True
 
             # HITL: intercept Codex approval elicitations and route them to the
             # frontend over this stream (instead of auto-approving).
             nc.on_server_request = _approval_handler(nc, codex_tid)
 
-            _active.add(codex_tid)
             for e in run_started(state):
                 yield encoder.encode(e)
 
@@ -316,7 +334,7 @@ async def agui(request: Request):
             for e in run_error(state, f"{type(ex).__name__}: {ex}"):
                 yield encoder.encode(e)
         finally:
-            if codex_tid:
+            if codex_tid and owns_turn:
                 _active.discard(codex_tid)
             if nc:
                 await nc.close()

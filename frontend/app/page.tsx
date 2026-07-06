@@ -52,7 +52,8 @@ export default function Page() {
       const d = await r.json();
       const rows: any[] = d.threads ?? [];
       // Sub-agent threads carry a parentId: order the flat list parent →
-      // its children, so the sidebar can render them nested. Children whose
+      // descendants (depth-first, so nested sub-agents stay under their
+      // ancestor), so the sidebar can render them nested. Children whose
       // parent isn't in the list (e.g. paged out) stay top-level.
       const listed = new Set(rows.map((t) => t.id));
       const childrenOf = new Map<string, any[]>();
@@ -61,9 +62,14 @@ export default function Page() {
           childrenOf.set(t.parentId, [...(childrenOf.get(t.parentId) ?? []), t]);
         }
       }
-      const ordered = rows
-        .filter((t) => !(t.parentId && listed.has(t.parentId)))
-        .flatMap((t) => [t, ...(childrenOf.get(t.id) ?? [])]);
+      const ordered: any[] = [];
+      const visit = (t: any) => {
+        ordered.push(t);
+        for (const c of childrenOf.get(t.id) ?? []) visit(c);
+      };
+      for (const t of rows) {
+        if (!(t.parentId && listed.has(t.parentId))) visit(t);
+      }
       const meta: Record<string, ThreadMeta> = {};
       for (const t of ordered) {
         if (t.parentId || t.agent) meta[t.id] = { parentId: t.parentId, agent: t.agent };

@@ -30,11 +30,12 @@ export type ThreadMeta = {
 };
 export const ThreadMetaContext = createContext<Record<string, ThreadMeta>>({});
 
-// ── run_js tool card ─────────────────────────────────────────────────────────
-// The bridge forwards the raw MCP result (`{content:[{text:"{...}"}]}`); unwrap
-// it to the meaningful `data` field (stdout / value), falling back sensibly.
-function unwrapResult(result: unknown): string {
-  if (result == null) return "";
+// ── MCP result unwrapping (shared by the tool cards) ─────────────────────────
+// The bridge forwards the raw MCP result (`{content:[{text:"{...}"}]}`); peel
+// it to the inner payload: JSON-string → object, content[].text joined, JSON
+// text parsed. Non-JSON text comes back as the string itself.
+function mcpResultPayload(result: unknown): any {
+  if (result == null) return null;
   let obj: any = result;
   if (typeof obj === "string") {
     try {
@@ -43,19 +44,28 @@ function unwrapResult(result: unknown): string {
       return obj;
     }
   }
-  let text: string | undefined;
   if (obj && Array.isArray(obj.content)) {
-    text = obj.content.map((c: any) => (typeof c?.text === "string" ? c.text : "")).join("");
-  }
-  let inner: any = obj;
-  if (text != null && text !== "") {
-    try {
-      inner = JSON.parse(text);
-    } catch {
-      return text;
+    const text = obj.content
+      .map((c: any) => (typeof c?.text === "string" ? c.text : ""))
+      .join("");
+    if (text !== "") {
+      try {
+        return JSON.parse(text);
+      } catch {
+        return text;
+      }
     }
   }
-  if (inner && typeof inner === "object") {
+  return obj;
+}
+
+// ── run_js tool card ─────────────────────────────────────────────────────────
+// Reduce a run_js result to the meaningful `data` field (stdout / value),
+// falling back sensibly.
+function unwrapResult(result: unknown): string {
+  const inner = mcpResultPayload(result);
+  if (inner == null) return "";
+  if (typeof inner === "object") {
     if (typeof inner.data === "string") return inner.data;
     if (typeof inner.execution_id === "string") return `execution_id: ${inner.execution_id}`;
   }
@@ -184,26 +194,9 @@ const AGENT_TOOL_LABELS: Record<string, string> = {
 };
 
 function agentPayload(result: unknown): any {
-  if (result == null) return null;
-  let obj: any = result;
-  if (typeof obj === "string") {
-    try {
-      obj = JSON.parse(obj);
-    } catch {
-      return { note: obj };
-    }
-  }
-  if (obj && Array.isArray(obj.content)) {
-    const text = obj.content
-      .map((c: any) => (typeof c?.text === "string" ? c.text : ""))
-      .join("");
-    try {
-      return JSON.parse(text);
-    } catch {
-      return { note: text };
-    }
-  }
-  return obj;
+  const inner = mcpResultPayload(result);
+  if (inner == null) return null;
+  return typeof inner === "string" ? { note: inner } : inner;
 }
 
 function AgentToolCard({ toolName, args, argsText, result, status }: any) {

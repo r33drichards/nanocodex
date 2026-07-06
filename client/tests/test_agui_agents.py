@@ -31,6 +31,8 @@ class FakeNC:
     turn_texts: list[tuple[str, str]] = []
     reply = "sub-agent report: done"
     fail_turns = False
+    fail_create = False
+    fail_steer = False
     turn_gate: asyncio.Event | None = None  # when set, run_turn blocks on it
 
     def __init__(self):
@@ -43,6 +45,8 @@ class FakeNC:
 
     async def create_thread(self, sandbox=None, cwd="/tmp", developer_instructions=None,
                             extra_mcp_servers=None):
+        if FakeNC.fail_create:
+            raise RuntimeError("thread/start refused")
         FakeNC._n = getattr(FakeNC, "_n", 0) + 1
         tid = f"codex-sub-{FakeNC._n}"
         FakeNC.existing.add(tid)
@@ -61,6 +65,8 @@ class FakeNC:
         return {"id": "turn-1"}
 
     async def steer_turn(self, thread_id, text):
+        if FakeNC.fail_steer:
+            raise RpcError("turn/steer", {"code": -1, "message": "no in-flight turn"})
         FakeNC.steered.append((thread_id, text))
         return {}
 
@@ -108,6 +114,7 @@ class AgentsTest(unittest.TestCase):
         FakeNC.created, FakeNC.create_calls = [], []
         FakeNC.steered, FakeNC.turn_texts = [], []
         FakeNC.reply, FakeNC.fail_turns, FakeNC.turn_gate = "sub-agent report: done", False, None
+        FakeNC.fail_create, FakeNC.fail_steer = False, False
         A.registry.reset()
         R.store = R.ThreadStore()
         R.store.bind("main-thread", "codex-main", "sid-main")
@@ -315,6 +322,63 @@ class AgentsTest(unittest.TestCase):
         finally:
             A.MAX_CHILDREN = old
 
+    def test_failed_spawns_do_not_consume_children_cap(self):
+        old = A.MAX_CHILDREN
+        A.MAX_CHILDREN = 1
+        try:
+            FakeNC.fail_create = True
+            _, is_err = _call_tool(self.client, "spawn_agent", {"task": "t"})
+            self.assertTrue(is_err)
+            FakeNC.fail_create = False
+            payload, is_err = _call_tool(self.client, "spawn_agent",
+                                         {"task": "t", "wait": True})
+            self.assertFalse(is_err)
+            self.assertEqual(payload["status"], "idle")
+        finally:
+            A.MAX_CHILDREN = old
+
+    def test_wait_timeout_zero_reports_current_state(self):
+        async def scenario():
+            FakeNC.turn_gate = asyncio.Event()
+            out = await A._tool_spawn("main-thread", {"task": "long"})
+            res = await A._tool_wait("main-thread",
+                                     {"agent_id": out["agentId"], "timeout_sec": 0})
+            self.assertEqual(res["status"], "running")
+            FakeNC.turn_gate.set()
+            await A.registry.wait_idle(out["agentId"], timeout=5)
+        asyncio.run(scenario())
+
+    def test_steer_failure_queues_message_for_next_turn(self):
+        async def scenario():
+            FakeNC.turn_gate = asyncio.Event()
+            out = await A._tool_spawn("main-thread", {"task": "long"})
+            await asyncio.sleep(0)  # let the first turn actually start
+            FakeNC.fail_steer = True
+            res = await A._tool_send("main-thread", {
+                "agent_id": out["agentId"], "message": "note me", "wait": False})
+            self.assertEqual(res["delivered"], "queued")
+            self.assertEqual(A.registry.inbox_size(out["threadId"]), 1)
+            FakeNC.fail_steer = False
+            FakeNC.turn_gate.set()
+            await A.registry.wait_idle(out["agentId"], timeout=5)
+            FakeNC.turn_gate = None
+            # the queued note rides along with the agent's next turn input
+            await A._tool_send("main-thread", {
+                "agent_id": out["agentId"], "message": "again", "wait": True})
+            sent = FakeNC.turn_texts[-1][1]
+            self.assertIn("note me", sent)
+            self.assertIn("again", sent)
+        asyncio.run(scenario())
+
+    def test_spawn_from_unresolvable_thread_errors_with_hint(self):
+        # A header key with no binding that is also not a codex thread id —
+        # the post-restart case; reports could never be delivered back.
+        out, is_err = _call_tool(self.client, "spawn_agent", {"task": "t"},
+                                 agent_key="ghost-key")
+        self.assertTrue(is_err)
+        self.assertIn("AGUI_BINDINGS_PATH", out["error"])
+        self.assertEqual(FakeNC.created, [])
+
     def test_missing_header_errors(self):
         r = self.client.post("/agents/mcp", json={
             "jsonrpc": "2.0", "id": 1, "method": "tools/call",
@@ -339,6 +403,22 @@ class AgentsTest(unittest.TestCase):
         self.assertEqual(FakeNC.steered[0][0], "codex-main")
         self.assertIn("all done", FakeNC.steered[0][1])
         self.assertEqual(A.registry.inbox_size("codex-main"), 0)
+
+    def test_post_to_thread_with_live_background_turn_409s(self):
+        # A sub-agent thread is bound under its agent id, so the router's
+        # binding lookup misses it; the raw-id check must still 409 while its
+        # bridge-driven background turn holds the thread.
+        payload, _ = _call_tool(self.client, "spawn_agent", {"task": "t", "wait": True})
+        R._active.add(payload["threadId"])  # as if its background turn is live
+        try:
+            r = self.client.post("/agui", json={
+                "threadId": payload["threadId"], "runId": "r1", "state": {},
+                "messages": [{"id": "m1", "role": "user", "content": "hi"}],
+                "tools": [], "context": [], "forwardedProps": {},
+            })
+            self.assertEqual(r.status_code, 409)
+        finally:
+            R._active.discard(payload["threadId"])
 
     def test_thread_list_annotates_subagents(self):
         payload, _ = _call_tool(self.client, "spawn_agent",
