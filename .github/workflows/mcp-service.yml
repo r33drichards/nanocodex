@@ -69,6 +69,12 @@ jobs:
           df -h /
 
       - uses: DeterminateSystems/nix-installer-action@v16
+        with:
+          # Pull prebuilt store paths from the project's attic binary cache
+          # (self-hosted on Railway). Public cache — no auth needed to pull.
+          extra-conf: |
+            extra-substituters = https://attic-cache-production.up.railway.app/nanocodex
+            extra-trusted-public-keys = nanocodex:wvR6YvGpPY8g9uQPQv+rW7hu1toPFf7Oo0MEQNtjy7A=
 
       # Cross-run /nix/store cache keyed on flake.lock. Its own key namespace
       # (`mcp-<arch>-`) so it doesn't fight ghcr.yml's cache for budget.
@@ -81,6 +87,21 @@ jobs:
           purge-prefixes: mcp-${{ matrix.arch }}-
           purge-created: 0
           purge-primary-key: never
+
+      # Background attic uploader (see ghcr.yml) — overlaps the build, never
+      # blocks, skips on fork PRs.
+      - name: attic cache — background uploader (non-blocking)
+        env:
+          ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
+        run: |
+          if [ -z "${ATTIC_TOKEN:-}" ]; then
+            echo "::notice::ATTIC_TOKEN unset — cache upload disabled (pull still works)"
+            exit 0
+          fi
+          nix profile install github:zhaofengli/attic#attic-client
+          attic login ci https://attic-cache-production.up.railway.app "$ATTIC_TOKEN"
+          nohup attic watch-store ci:nanocodex >/tmp/attic-watch.log 2>&1 &
+          echo "attic watch-store started (PID $!) — uploading store paths as they build"
 
       - name: nix build + push mcp-v8 service images (skopeo)
         run: |
