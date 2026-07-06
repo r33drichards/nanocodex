@@ -9,6 +9,7 @@ model provider; the router only supplies the per-thread mcp-v8 sandbox.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import uuid
 
@@ -422,8 +423,8 @@ def _auth_status() -> dict:
     mode = data.get("auth_mode")
     if not mode:
         # Legacy: a bare OPENAI_API_KEY / tokens block implies the mode.
-        mode = "chatgpt" if data.get("tokens") else (
-            "apikey" if data.get("OPENAI_API_KEY") else None
+        mode = (
+            "chatgpt" if data.get("tokens") else ("apikey" if data.get("OPENAI_API_KEY") else None)
         )
     return {
         "loggedIn": mode in ("chatgpt", "chatgptDeviceCode", "apiKey", "apikey"),
