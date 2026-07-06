@@ -7,10 +7,21 @@
 approval_policy = "never"
 sandbox_mode = "read-only"
 
-# Model auth via API key env var — no `codex login` required.
-# Default: Azure OpenAI (AZURE_OPENAI_API_KEY). Switch to "openai-api-key"
-# to use api.openai.com with OPENAI_API_KEY instead, or "ollama-cloud" to
-# use ollama.com with OLLAMA_API_KEY.
+# Provider + auth are two independent adapters codex already implements:
+#   PROVIDER — a [model_providers.*] id below (or a built-in: "openai",
+#              "azure", "ollama", ...); pick it with NANOCODEX_MODEL_PROVIDER.
+#   AUTH     — codex's AuthMode, chosen automatically from what's present:
+#              * API key: set the provider's env_key var (AZURE_OPENAI_API_KEY
+#                / OPENAI_API_KEY / OLLAMA_API_KEY).
+#              * ChatGPT / Codex subscription: NANOCODEX_MODEL_PROVIDER=openai
+#                and sign in once via the device-code flow (bridge endpoint
+#                POST /agui/login/start -> open the URL, approve). codex writes
+#                $CODEX_HOME/auth.json (symlink it to /data/auth.json so the
+#                login + token refresh persist) and routes to the ChatGPT
+#                backend, billing your subscription. Model e.g. "gpt-5-codex".
+# Default below: Azure (AZURE_OPENAI_API_KEY). Switch to "openai-api-key"
+# (api.openai.com + OPENAI_API_KEY), "ollama-cloud" (OLLAMA_API_KEY), or
+# "openai" (ChatGPT/Codex auth.json).
 #
 # The standalone supervisord images override these two keys at startup with
 # `-c model_provider=$NANOCODEX_MODEL_PROVIDER -c model=$NANOCODEX_MODEL`
