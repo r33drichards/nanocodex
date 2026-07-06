@@ -2,6 +2,8 @@ __pycache__/
 *.pyc
 .env
 client/.venv/
+.venv/
+.venv-test/
 .DS_Store
 scratch.md
 .devloop/
