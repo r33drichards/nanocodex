@@ -25,7 +25,7 @@ NANOCODEX_URL="ws://127.0.0.1:4510" NANOCODEX_WS_TOKEN="nanocodex-dev-ws-token-c
   "$venv/bin/uvicorn" nanocodex_client.agui.app:app --host 127.0.0.1 --port 8130 --app-dir client \
   > /tmp/agui-bridge.log 2>&1 &
 BRIDGE_PID=$!
-for i in $(seq 1 30); do curl -sf http://127.0.0.1:8130/healthz >/dev/null && break; sleep 1; done
+for _ in $(seq 1 30); do curl -sf http://127.0.0.1:8130/healthz >/dev/null && break; sleep 1; done
 
 echo "== playwright browser e2e =="
 AGUI_URL="http://127.0.0.1:8130" "$venv/bin/python" "$here/test_agui_browser.py"

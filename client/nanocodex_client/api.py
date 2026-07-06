@@ -111,10 +111,14 @@ async def rpc_error_handler(_, exc: RpcError):
 @app.post("/threads")
 async def create_thread(body: CreateThread):
     async with await _connect() as nc:
-        resp = await nc.create_thread(sandbox=_sandbox(body.sandbox),
-                                      model=body.model, cwd=body.cwd)
-        return {"threadId": resp["thread"]["id"], "model": resp.get("model"),
-                "modelProvider": resp.get("modelProvider")}
+        resp = await nc.create_thread(
+            sandbox=_sandbox(body.sandbox), model=body.model, cwd=body.cwd
+        )
+        return {
+            "threadId": resp["thread"]["id"],
+            "model": resp.get("model"),
+            "modelProvider": resp.get("modelProvider"),
+        }
 
 
 @app.get("/threads")
@@ -179,8 +183,9 @@ async def proxy(ws: WebSocket):
     token = default_ws_token()
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     try:
-        upstream = await websockets.connect(server_url(), additional_headers=headers,
-                                            max_size=32 * 1024 * 1024)
+        upstream = await websockets.connect(
+            server_url(), additional_headers=headers, max_size=32 * 1024 * 1024
+        )
     except OSError as e:
         await ws.close(code=1014, reason=f"upstream unreachable: {e}")
         return

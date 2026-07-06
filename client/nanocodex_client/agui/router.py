@@ -9,7 +9,6 @@ model provider; the router only supplies the per-thread mcp-v8 sandbox.
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import uuid
 
@@ -76,12 +75,15 @@ def _approval_handler(nc: Nanocodex, thread_id: str):
         fut: asyncio.Future = asyncio.get_event_loop().create_future()
         _approvals[approval_id] = fut
         # Surface the approval onto the run's SSE stream (frontend renders it).
-        nc.inject_notification(_APPROVAL, {
-            "threadId": thread_id,
-            "approvalId": approval_id,
-            "toolDescription": meta.get("tool_description"),
-            "detail": params.get("message") or params,
-        })
+        nc.inject_notification(
+            _APPROVAL,
+            {
+                "threadId": thread_id,
+                "approvalId": approval_id,
+                "toolDescription": meta.get("tool_description"),
+                "detail": params.get("message") or params,
+            },
+        )
         approved = False
         try:
             approved = await asyncio.wait_for(fut, timeout=APPROVAL_TIMEOUT_SECS)
@@ -89,9 +91,14 @@ def _approval_handler(nc: Nanocodex, thread_id: str):
             approved = False
         finally:
             _approvals.pop(approval_id, None)
-            nc.inject_notification(_APPROVAL_RESOLVED, {
-                "threadId": thread_id, "approvalId": approval_id, "approved": approved,
-            })
+            nc.inject_notification(
+                _APPROVAL_RESOLVED,
+                {
+                    "threadId": thread_id,
+                    "approvalId": approval_id,
+                    "approved": approved,
+                },
+            )
         # MCP elicitation reply Codex understands (accept/decline).
         return {"result": {"action": "accept" if approved else "decline"}}
 
@@ -144,7 +151,9 @@ def _trailing_user_input(messages: list) -> list[dict]:
                     url = _image_url(getattr(part, "source", None))
                     if url:
                         item = {"type": "image", "url": url}
-                        detail = getattr(getattr(part, "metadata", None) or object(), "detail", None)
+                        detail = getattr(
+                            getattr(part, "metadata", None) or object(), "detail", None
+                        )
                         if detail:
                             item["detail"] = detail
                         out.append(item)
@@ -175,7 +184,7 @@ _DEFAULT_INSTRUCTIONS = (
     "`console.log(...)` to produce output. Prefer computing with run_js over doing "
     "arithmetic or data work by hand; do not attempt a shell or local filesystem.\n\n"
     "To show the user a chart, call the `render_plotly` tool with a Plotly figure "
-    "as the arguments: {\"data\": [...traces], \"layout\": {...}}. The chat UI "
+    'as the arguments: {"data": [...traces], "layout": {...}}. The chat UI '
     "renders the figure inline directly from the call arguments (the tool result "
     "is only an ack), so put literal values in `data` — compute them first with "
     "run_js if needed. Prefer a render_plotly chart over an ASCII/text chart "
@@ -316,15 +325,26 @@ async def agui(request: Request):
                     agents_registry.requeue_inbox(codex_tid, pending_notes)
             async for method, params in notif:
                 if method == _APPROVAL:
-                    yield encoder.encode(CustomEvent(name="approval_request", value={
-                        "approvalId": params["approvalId"],
-                        "toolDescription": params.get("toolDescription"),
-                    }))
+                    yield encoder.encode(
+                        CustomEvent(
+                            name="approval_request",
+                            value={
+                                "approvalId": params["approvalId"],
+                                "toolDescription": params.get("toolDescription"),
+                            },
+                        )
+                    )
                     continue
                 if method == _APPROVAL_RESOLVED:
-                    yield encoder.encode(CustomEvent(name="approval_resolved", value={
-                        "approvalId": params["approvalId"], "approved": params["approved"],
-                    }))
+                    yield encoder.encode(
+                        CustomEvent(
+                            name="approval_resolved",
+                            value={
+                                "approvalId": params["approvalId"],
+                                "approved": params["approved"],
+                            },
+                        )
+                    )
                     continue
                 for e in map_notification(method, params, state):
                     yield encoder.encode(e)
@@ -411,3 +431,96 @@ async def resolve_approval(approval_id: str, request: Request):
     approved = bool(body.get("approve", body.get("approved", False)))
     fut.set_result(approved)
     return {"approvalId": approval_id, "approved": approved}
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Auth adapter: ChatGPT / Codex-subscription device-code login.
+#
+# nanocodex's model AUTH is codex's own adapter surface (AuthMode: ApiKey via
+# an env key, Chatgpt via $CODEX_HOME/auth.json, ...). Swapping PROVIDERS is
+# already NANOCODEX_MODEL_PROVIDER/NANOCODEX_MODEL; this adds the one auth
+# method the deployment couldn't do headlessly: sign in with a ChatGPT/Codex
+# account via the OAuth device-code flow, which codex-app-server drives itself
+# (account/login/start -> {verification_url, user_code}; it polls and writes
+# auth.json on approval). Point NANOCODEX_MODEL_PROVIDER=openai (+ a Codex
+# model, e.g. gpt-5-codex) to use the subscription once logged in.
+#
+# auth.json should live on the /data volume (CODEX_HOME/auth.json symlinked to
+# /data/auth.json) so the login — and codex's automatic token refresh — persist
+# across redeploys.
+
+_CODEX_HOME = os.environ.get("CODEX_HOME", "/codex-home")
+_AUTH_JSON = os.path.join(_CODEX_HOME, "auth.json")
+
+# login_id -> {"verification_url", "user_code", "status"}. Cleared on restart.
+_logins: dict[str, dict] = {}
+
+
+def _auth_status() -> dict:
+    """Read $CODEX_HOME/auth.json (following the /data symlink) to report the
+    active auth method without needing an app-server round-trip."""
+    try:
+        with open(_AUTH_JSON, "r") as fh:
+            data = json.load(fh)
+    except (FileNotFoundError, ValueError, OSError):
+        return {"loggedIn": False, "authMode": None}
+    mode = data.get("auth_mode")
+    if not mode:
+        # Legacy: a bare OPENAI_API_KEY / tokens block implies the mode.
+        mode = "chatgpt" if data.get("tokens") else (
+            "apikey" if data.get("OPENAI_API_KEY") else None
+        )
+    return {
+        "loggedIn": mode in ("chatgpt", "chatgptDeviceCode", "apiKey", "apikey"),
+        "authMode": mode,
+    }
+
+
+@router.get("/login/status")
+async def login_status():
+    """Current model-auth state (from auth.json) plus the selected provider."""
+    st = _auth_status()
+    st["provider"] = os.environ.get("NANOCODEX_MODEL_PROVIDER")
+    st["model"] = os.environ.get("NANOCODEX_MODEL")
+    return st
+
+
+@router.post("/login/start")
+async def login_start():
+    """Begin ChatGPT/Codex device-code login. Returns the verification URL and
+    one-time code to open in a browser; codex-app-server completes the poll and
+    writes auth.json on approval. Poll GET /login/status for completion."""
+    nc = await Nanocodex.connect()
+    try:
+        resp = await nc.request("account/login/start", {"type": "chatgptDeviceCode"})
+    except RpcError as e:
+        await nc.close()
+        raise HTTPException(status_code=502, detail=f"account/login/start failed: {e}")
+    login_id = resp.get("loginId") or resp.get("login_id") or uuid.uuid4().hex
+    info = {
+        "loginId": login_id,
+        "verificationUrl": resp.get("verificationUrl") or resp.get("verification_url"),
+        "userCode": resp.get("userCode") or resp.get("user_code"),
+        "status": "pending",
+    }
+    _logins[login_id] = info
+
+    async def _await_completion():
+        # Hold the connection open so the app-server's background poll can
+        # complete and write auth.json; mark done on the completion
+        # notification or after a timeout.
+        try:
+            async with asyncio.timeout(15 * 60):
+                async for method, _params in nc.notifications():
+                    if method == "account/login/completed":
+                        info["status"] = "completed"
+                        break
+        except (asyncio.TimeoutError, Exception):
+            # Timed out or connection dropped; auth.json (written server-side)
+            # is the source of truth — GET /login/status reads it.
+            pass
+        finally:
+            await nc.close()
+
+    asyncio.create_task(_await_completion())
+    return info

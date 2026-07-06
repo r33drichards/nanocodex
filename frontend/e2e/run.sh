@@ -36,14 +36,14 @@ NANOCODEX_URL="ws://127.0.0.1:4520" NANOCODEX_WS_TOKEN="nanocodex-dev-ws-token-c
   "$venv/bin/uvicorn" nanocodex_client.agui.app:app --host 127.0.0.1 --port 8132 --app-dir client \
   > /tmp/agui-bridge.log 2>&1 &
 BRIDGE_PID=$!
-for i in $(seq 1 30); do curl -sf http://127.0.0.1:8132/healthz >/dev/null && break; sleep 1; done
+for _ in $(seq 1 30); do curl -sf http://127.0.0.1:8132/healthz >/dev/null && break; sleep 1; done
 
 echo "== frontend: next dev (:3100) =="
 ( cd "$frontend" && [ -d node_modules ] || npm install )
 NEXT_PUBLIC_BRIDGE_URL="http://127.0.0.1:8132" \
   npm --prefix "$frontend" run dev -- -p 3100 > /tmp/agui-frontend.log 2>&1 &
 FRONTEND_PID=$!
-for i in $(seq 1 60); do curl -sf http://localhost:3100 >/dev/null && break; sleep 1; done
+for _ in $(seq 1 60); do curl -sf http://localhost:3100 >/dev/null && break; sleep 1; done
 
 echo "== playwright e2e (threads + run_js + persistence) =="
 FRONTEND_URL="http://localhost:3100" "$venv/bin/python" "$here/test_assistant_ui.py"

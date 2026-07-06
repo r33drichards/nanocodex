@@ -7,9 +7,14 @@ from nanocodex_client.cluster import ClusterSettings, LearnerFactory
 
 def _settings():
     return ClusterSettings(
-        leader_addr="leader:7000", s3_bucket="nanocodex",
-        s3_endpoint="http://minio:9000", s3_access_key_id="minio",
-        s3_secret_access_key="minio123", advertise_host="codex", base_cluster_port=7000)
+        leader_addr="leader:7000",
+        s3_bucket="nanocodex",
+        s3_endpoint="http://minio:9000",
+        s3_access_key_id="minio",
+        s3_secret_access_key="minio123",
+        advertise_host="codex",
+        base_cluster_port=7000,
+    )
 
 
 class LearnerFactoryTest(unittest.TestCase):
@@ -17,7 +22,9 @@ class LearnerFactoryTest(unittest.TestCase):
         spec, sid = LearnerFactory(_settings()).learner()
         js = spec.to_config()["mcp_servers"]["js"]
         a = js["args"]
-        self.assertEqual(a[:6], ["--heap-store", "s3", "--fs-store", "s3", "--s3-bucket", "nanocodex"])
+        self.assertEqual(
+            a[:6], ["--heap-store", "s3", "--fs-store", "s3", "--s3-bucket", "nanocodex"]
+        )
         self.assertIn("--join-as-learner", a)
         self.assertEqual(a[a.index("--join") + 1], "leader:7000")
         self.assertEqual(a[a.index("--node-id") + 1], sid)

@@ -54,9 +54,7 @@ async function main() {
         // nanocodex has exactly one tool (run_js), so its ":wrench:" status
         // row is informative rather than noisy. Set SLACK_HIDE_TOOL_STATUS=1
         // to suppress it; unset keeps the package default (shown).
-        ...(process.env.SLACK_HIDE_TOOL_STATUS
-          ? { showToolStatus: false }
-          : {}),
+        ...(process.env.SLACK_HIDE_TOOL_STATUS ? { showToolStatus: false } : {}),
         // Reply gating is built in at this package version: DMs respond,
         // channels need an @mention to start a thread, and plain replies
         // continue only in threads the bot already owns.

@@ -49,9 +49,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 PORT = 9099
 JS_NAMESPACE = "mcp__js"
 MAX_POLLS = 20  # safety cap on get_execution_output poll loop
-UUID_RE = re.compile(
-    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
-)
+UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 
 _call_seq = 0
 _seq_lock = threading.Lock()
@@ -153,9 +151,9 @@ def decide(inputs):
     code = ""
     if ui >= 0:
         text = user_text(inputs[ui])
-        code = text[len("RUNJS::"):] if text.startswith("RUNJS::") else text
+        code = text[len("RUNJS::") :] if text.startswith("RUNJS::") else text
 
-    turn = inputs[ui + 1:] if ui >= 0 else inputs
+    turn = inputs[ui + 1 :] if ui >= 0 else inputs
     # Map call_id -> function_call name (for the current turn).
     call_names = {}
     outputs = []  # (call_id, output_text) in order
@@ -175,11 +173,13 @@ def decide(inputs):
         # Step 1: kick off run_js with the test-provided code.
         cid = next_call_id("call-runjs")
         log(f"turn start -> run_js code={code!r}")
-        return sse([
-            ev_created(rid),
-            ev_function_call(cid, JS_NAMESPACE, "run_js", {"code": code}),
-            ev_completed(rid),
-        ])
+        return sse(
+            [
+                ev_created(rid),
+                ev_function_call(cid, JS_NAMESPACE, "run_js", {"code": code}),
+                ev_completed(rid),
+            ]
+        )
 
     last_call_id, last_output = outputs[-1]
     last_name = call_names.get(last_call_id, "")
@@ -192,11 +192,15 @@ def decide(inputs):
         exec_id = m.group(0)
         cid = next_call_id("call-getout")
         log(f"run_js -> execution_id={exec_id}; requesting output")
-        return sse([
-            ev_created(rid),
-            ev_function_call(cid, JS_NAMESPACE, "get_execution_output", {"execution_id": exec_id}),
-            ev_completed(rid),
-        ])
+        return sse(
+            [
+                ev_created(rid),
+                ev_function_call(
+                    cid, JS_NAMESPACE, "get_execution_output", {"execution_id": exec_id}
+                ),
+                ev_completed(rid),
+            ]
+        )
 
     # last_name == get_execution_output (or unknown) -> completion check.
     completed = '"completed"' in last_output or "completed" in last_output
@@ -210,11 +214,13 @@ def decide(inputs):
     exec_id = m.group(0) if m else ""
     cid = next_call_id("call-getout")
     log(f"execution not ready (polls={poll_count}); polling id={exec_id}")
-    return sse([
-        ev_created(rid),
-        ev_function_call(cid, JS_NAMESPACE, "get_execution_output", {"execution_id": exec_id}),
-        ev_completed(rid),
-    ])
+    return sse(
+        [
+            ev_created(rid),
+            ev_function_call(cid, JS_NAMESPACE, "get_execution_output", {"execution_id": exec_id}),
+            ev_completed(rid),
+        ]
+    )
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -231,7 +237,9 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        if self.path.rstrip("/").endswith("/models") or self.path.rstrip("/").endswith("/v1/models"):
+        if self.path.rstrip("/").endswith("/models") or self.path.rstrip("/").endswith(
+            "/v1/models"
+        ):
             body = json.dumps({"data": [], "object": "list", "models": []}).encode()
             self._send(200, body, "application/json")
             return
@@ -254,8 +262,12 @@ class Handler(BaseHTTPRequestHandler):
             payload = decide(inputs)
         except Exception as exc:  # never 500 codex; log and finish the turn
             log(f"decide() error: {exc!r}")
-            payload = sse([ev_assistant_message(next_call_id("msg"), "error"),
-                           ev_completed(next_call_id("resp"))])
+            payload = sse(
+                [
+                    ev_assistant_message(next_call_id("msg"), "error"),
+                    ev_completed(next_call_id("resp")),
+                ]
+            )
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Content-Length", str(len(payload)))

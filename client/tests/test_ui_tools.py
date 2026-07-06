@@ -13,31 +13,49 @@ def _talk(lines: list[dict | str]) -> list[dict]:
     parsed response lines."""
     server = ui_mcp_server()
     stdin = "".join(
-        (m if isinstance(m, str) else json.dumps(m, separators=(",", ":"))) + "\n"
-        for m in lines
+        (m if isinstance(m, str) else json.dumps(m, separators=(",", ":"))) + "\n" for m in lines
     )
     proc = subprocess.run(
         [server["command"], *server["args"]],
-        input=stdin, capture_output=True, text=True, timeout=10,
+        input=stdin,
+        capture_output=True,
+        text=True,
+        timeout=10,
         env={**server["env"], "PATH": "/usr/bin:/bin"},
     )
     assert proc.returncode == 0, proc.stderr
-    return [json.loads(l) for l in proc.stdout.splitlines() if l.strip()]
+    return [json.loads(line) for line in proc.stdout.splitlines() if line.strip()]
 
 
 def test_handshake_list_call():
-    out = _talk([
-        {"jsonrpc": "2.0", "id": 0, "method": "initialize",
-         "params": {"protocolVersion": "2025-06-18", "capabilities": {},
-                    "clientInfo": {"name": "codex", "version": "0.0.0"}}},
-        {"jsonrpc": "2.0", "method": "notifications/initialized"},
-        {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
-        {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
-         "params": {"name": "render_plotly", "arguments": {
-             "data": [{"type": "bar", "x": ["a", "b"], "y": [1, 2]}],
-             "layout": {"title": {"text": "naive pipe"}},
-         }}},
-    ])
+    out = _talk(
+        [
+            {
+                "jsonrpc": "2.0",
+                "id": 0,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": {"name": "codex", "version": "0.0.0"},
+                },
+            },
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "render_plotly",
+                    "arguments": {
+                        "data": [{"type": "bar", "x": ["a", "b"], "y": [1, 2]}],
+                        "layout": {"title": {"text": "naive pipe"}},
+                    },
+                },
+            },
+        ]
+    )
     assert len(out) == 3  # the notification produces no reply
 
     init, listed, called = out
@@ -57,11 +75,16 @@ def test_handshake_list_call():
 def test_id_extraction_ignores_ids_inside_arguments():
     # An "id" inside the chart data must not be mistaken for the request id
     # (the request id is serialized before params, so first-match wins).
-    out = _talk([
-        {"jsonrpc": "2.0", "id": 7, "method": "tools/call",
-         "params": {"name": "render_plotly",
-                    "arguments": {"data": [{"id": 999, "y": [1]}]}}},
-    ])
+    out = _talk(
+        [
+            {
+                "jsonrpc": "2.0",
+                "id": 7,
+                "method": "tools/call",
+                "params": {"name": "render_plotly", "arguments": {"data": [{"id": 999, "y": [1]}]}},
+            },
+        ]
+    )
     assert out[0]["id"] == 7
 
 

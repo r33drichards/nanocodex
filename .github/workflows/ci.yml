@@ -1,0 +1,216 @@
+name: ci
+
+# Lint, format, and test every language ecosystem in the repo, each in its own
+# parallel job so the whole suite finishes in the time of the slowest check.
+# The `all-green` job at the bottom aggregates them into a single status — make
+# THAT the required check in branch protection to block PRs on the whole matrix
+# (Settings -> Branches / Rulesets -> Require status checks -> `all-green`).
+#
+# What runs where:
+#   python    ruff check (lint) + ruff format --check + pytest      (client/, integration/, e2e, skills)
+#   node      tsc --noEmit + `npm test --if-present`                (frontend/, slackbot/)
+#   prettier  prettier --check on the app packages' JS/TS/CSS
+#   proto     buf lint + buf breaking (vs main on PRs)              (proto/)
+#   rego      opa check --strict, per policy file                   (policies/, languages/)
+#   shell     shellcheck on every tracked *.sh
+#   actions   actionlint on the workflows themselves
+#   nix       nix flake check --no-build (the flake evaluates)      (flake.nix)
+#
+# Formatting is enforced only where the tool matches the code's style. proto,
+# rego, and shell keep their deliberate hand-aligned layout, so those jobs lint
+# for correctness but do not impose a reformatter.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref (but let main's runs finish).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Python: client/, integration/, frontend/e2e/, language skill scripts ──
+  python:
+    name: python (${{ matrix.task }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        task: [lint, format, test]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install tools
+        run: |
+          python -m pip install --upgrade pip
+          if [ "${{ matrix.task }}" = "test" ]; then
+            pip install -e "client/[test]"
+          else
+            pip install ruff==0.15.8
+          fi
+      - name: Run ${{ matrix.task }}
+        run: |
+          case "${{ matrix.task }}" in
+            lint)   ruff check . ;;
+            format) ruff format --check --diff . ;;
+            # Unit tests only. e2e/ (Playwright + live model) and integration/
+            # (docker compose) have their own workflow / are run by hand.
+            test)   python -m pytest client/tests --ignore=client/tests/e2e -q ;;
+          esac
+
+  # ── Node/TypeScript: frontend (Next.js) and slackbot (tsx) ────────────────
+  node:
+    name: node (${{ matrix.project }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        project: [frontend, slackbot]
+    defaults:
+      run:
+        working-directory: ${{ matrix.project }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ${{ matrix.project }}/package-lock.json
+      - run: npm ci
+      - name: Typecheck (tsc --noEmit)
+        run: npx tsc --noEmit
+      - name: Test (if the package defines a test script)
+        run: npm test --if-present
+
+  # ── Prettier: formatting of the app packages' JS/TS/CSS ───────────────────
+  prettier:
+    name: prettier
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: prettier --check
+        run: >
+          npx --yes prettier@3.8.1 --check
+          "frontend/**/*.{ts,tsx,js,jsx,mjs,css}"
+          "slackbot/**/*.{ts,js,mjs}"
+          "languages/*.mjs"
+
+  # ── Protobuf: buf lint + breaking-change detection ────────────────────────
+  proto:
+    name: proto
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # buf breaking needs history to reach the base
+      - uses: bufbuild/buf-setup-action@v1
+        with:
+          version: "1.71.0"
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Lint
+        working-directory: proto
+        run: buf lint
+      - name: Detect breaking changes vs main
+        if: github.event_name == 'pull_request'
+        working-directory: proto
+        run: |
+          git fetch --no-tags origin main:refs/heads/main \
+            || git fetch --no-tags --depth=200 origin main:refs/heads/main
+          buf breaking --against '../.git#branch=main,subdir=proto'
+
+  # ── Rego (OPA) policies: validate each policy compiles ────────────────────
+  # filesystem.rego and filesystem-skills.rego are two *alternative* policies
+  # that both define package mcp.filesystem, so they are checked one file at a
+  # time rather than loaded together.
+  rego:
+    name: rego
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: open-policy-agent/setup-opa@v2
+        with:
+          version: "1.9.0"
+      - name: opa check (per file)
+        run: |
+          rc=0
+          for f in $(git ls-files '*.rego'); do
+            echo "== opa check --strict $f =="
+            opa check --strict "$f" || rc=1
+          done
+          exit $rc
+
+  # ── Shell scripts: shellcheck every tracked *.sh ──────────────────────────
+  shell:
+    name: shell
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: |
+          mapfile -t scripts < <(git ls-files '*.sh')
+          printf 'checking: %s\n' "${scripts[@]}"
+          # SC2015 ("A && B || C is not if-then-else") is an info-level false
+          # positive for the intentional `[ cond ] && action || true` cleanup
+          # idiom in the e2e scripts. Everything else (SC2086, etc.) stays on.
+          shellcheck -e SC2015 "${scripts[@]}"
+
+  # ── GitHub Actions workflows: actionlint (+ embedded shellcheck) ──────────
+  actions:
+    name: actions
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: actionlint
+        env:
+          # SC2016 fires on intentionally single-quoted GraphQL query strings
+          # (deploy.yml) where the `$var` are GraphQL variables, not shell.
+          SHELLCHECK_OPTS: --exclude=SC2016
+        run: |
+          bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash) 1.7.7
+          ./actionlint -color
+
+  # ── Nix: the flake evaluates (source of truth for all container images) ───
+  nix:
+    name: nix
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - name: nix flake check
+        run: nix flake check --no-build --show-trace
+
+  # ── Aggregate gate: the single check to mark "required" in branch rules ───
+  all-green:
+    name: all-green
+    if: always()
+    needs: [python, node, prettier, proto, rego, shell, actions, nix]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if any job did not succeed
+        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+        run: |
+          echo "One or more CI jobs failed or were cancelled."
+          exit 1
+      - run: echo "All CI checks passed ✅"

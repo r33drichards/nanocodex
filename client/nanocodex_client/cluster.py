@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import itertools
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 from .core import DEFAULT_POLICY_DIR, POLICIES_JSON, SandboxSpec
@@ -86,7 +86,9 @@ class LearnerFactory:
         self.thread_to_session[thread_id] = session_id
         self.session_to_thread[session_id] = thread_id
 
-    def learner(self, session_id: Optional[str] = None, cluster_port: Optional[int] = None) -> tuple[SandboxSpec, str]:
+    def learner(
+        self, session_id: Optional[str] = None, cluster_port: Optional[int] = None
+    ) -> tuple[SandboxSpec, str]:
         """Return (SandboxSpec, session_id) for a per-thread learner. Reuses the
         recorded cluster_port if this session_id was seen before (resume)."""
         session_id = session_id or self.new_session_id()
@@ -95,17 +97,29 @@ class LearnerFactory:
         self.sessions[session_id] = cluster_port
         s = self.settings
         args = [
-            "--heap-store", "s3",
-            "--fs-store", "s3",
-            "--s3-bucket", s.s3_bucket,
-            "--cluster-port", str(cluster_port),
-            "--node-id", session_id,
-            "--join", s.leader_addr,
+            "--heap-store",
+            "s3",
+            "--fs-store",
+            "s3",
+            "--s3-bucket",
+            s.s3_bucket,
+            "--cluster-port",
+            str(cluster_port),
+            "--node-id",
+            session_id,
+            "--join",
+            s.leader_addr,
             "--join-as-learner",
-            "--advertise-addr", f"{s.advertise_host}:{cluster_port}",
-            "--session-id", session_id,
-            "--session-db-path", f"{DEFAULT_POLICY_DIR}/sessions/{session_id}",
-            "--policies-json", s.policies_json,
+            "--advertise-addr",
+            f"{s.advertise_host}:{cluster_port}",
+            "--session-id",
+            session_id,
+            "--session-db-path",
+            f"{DEFAULT_POLICY_DIR}/sessions/{session_id}",
+            "--policies-json",
+            s.policies_json,
         ]
-        spec = SandboxSpec(args=args, env=s.s3_env(), session_dir=f"{DEFAULT_POLICY_DIR}/sessions/{session_id}")
+        spec = SandboxSpec(
+            args=args, env=s.s3_env(), session_dir=f"{DEFAULT_POLICY_DIR}/sessions/{session_id}"
+        )
         return spec, session_id

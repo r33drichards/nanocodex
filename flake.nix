@@ -133,9 +133,12 @@
           # container filesystem, so the content-addressed heap/fs blob dirs
           # are safely shared; only the sled session DBs must stay per-process.
           #
-          # Persist by mounting volumes at /data, /tmp (per-thread agui
-          # sandbox state), /codex-home/sqlite and /codex-home/sessions;
-          # provide the ws token at /run/secrets/ws_token.
+          # Persist by mounting ONE volume at /data (Railway allows a single
+          # volume per service). It holds mcp-v8 heaps/fs and, via
+          # CODEX_SQLITE_HOME=/data/codex-state (baked below), all codex thread
+          # state — the state_5.sqlite thread index + sessions/ transcripts, so
+          # threads survive redeploys. Also mount /tmp for per-thread agui
+          # sandbox state; provide the ws token at /run/secrets/ws_token.
           pkgsTools = import nixpkgs-tools { inherit system; };
           pyPkgs = pkgsTools.python3Packages;
           lib = pkgs.lib;
@@ -489,6 +492,13 @@
                 Entrypoint = [ "/bin/supervisord" "-c" "/etc/supervisord.conf" ];
                 Env = [
                   "CODEX_HOME=/codex-home"
+                  # Persist codex thread state (state_5.sqlite index + sessions/
+                  # transcripts) on the /data volume so threads survive
+                  # redeploys. codex writes state_5.sqlite DIRECTLY under its
+                  # sqlite-home — which defaults to CODEX_HOME (/codex-home,
+                  # ephemeral) — so redirecting just sqlite-home to /data is
+                  # what keeps the thread LIST across deploys (mount /data).
+                  "CODEX_SQLITE_HOME=/data/codex-state"
                   "PATH=/usr/local/bin:/bin"
                   "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
                   "NIX_SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
@@ -609,10 +619,138 @@
             '';
             config = baseImageConfig;
           };
+
+          # ── Dedicated public mcp-v8 service image ───────────────────────
+          # A lean image running ONLY mcp-v8 (no codex/bridge/frontend/
+          # supervisord) as a single-node stateful streamable-HTTP MCP
+          # server on :8080 (path /mcp). This is the backend a Railway
+          # PUBLIC domain points at, and exactly what NANOCODEX_MCP_V8_URL
+          # (the client's `remote` sandbox preset) connects to. Per-session
+          # heap+fs state is keyed off the X-MCP-Session-Id header, so one
+          # service is multi-tenant-safe: each session id gets an isolated
+          # heap snapshot + /work filesystem under /data.
+          #
+          # SECURITY: mcp-v8 has NO enforcing authentication — `--jwks-url`
+          # only LOGS the JWT verification result, it never rejects a
+          # request (see server/src/mcp.rs capture_mcp_headers &
+          # mcp_sse.rs). run_js executes arbitrary JS and fetch() is
+          # allow-all (policies/fetch.rego). So an OPEN public URL lets
+          # anyone execute code and reach any URL from this container. If
+          # that is not acceptable, keep the service on Railway PRIVATE
+          # networking (reach it at <svc>.railway.internal:8080, no public
+          # domain) or front it with a bearer-checking reverse proxy and
+          # set NANOCODEX_MCP_V8_TOKEN on the client. The four hardening
+          # flags below are on by default as a sane public baseline; heap
+          # persistence disables WebAssembly (SnapshotCreator isolate), so
+          # this is the PLAIN variant — deploy nanocodex-languages' :8080
+          # instead if you need the WASM engines.
+          mcpV8ServiceImage = pkgs.dockerTools.streamLayeredImage {
+            name = "ghcr.io/r33drichards/nanocodex-mcp-v8-service";
+            tag = "latest";
+            contents = [
+              rootfs
+              pkgs.cacert
+              pkgs.bashInteractive
+              pkgs.coreutils
+              pkgs.curl
+            ];
+            fakeRootCommands = ''
+              chmod 1777 tmp
+              mkdir -p data/heaps data/fs data/sessions
+            '';
+            config = {
+              Entrypoint = [ "/usr/local/bin/mcp-v8" ];
+              Cmd = [
+                "--http-port" "8080"
+                "--bind-host" "0.0.0.0"
+                "--heap-store" "dir"
+                "--heap-dir" "/data/heaps"
+                "--fs-store" "dir"
+                "--fs-dir" "/data/fs"
+                "--session-db-path" "/data/sessions"
+                "--policies-json" "/app/policies/policies.json"
+                # Sane public hardening defaults (all opt-in in mcp-v8).
+                "--harden-freeze-ops"
+                "--harden-neutralize-proxy-details"
+                "--harden-neutralize-introspection"
+                "--harden-remove-bootstrap"
+              ];
+              Env = [
+                "PATH=/usr/local/bin:/bin"
+                "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
+                "NIX_SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
+              ];
+              ExposedPorts."8080/tcp" = { };
+              Volumes."/data" = { };
+            };
+          };
+
+          # Dedicated LANGUAGES mcp-v8 service: run_js + the six WASM engines
+          # (picat/tla/minizinc/autolisp/lua/craftos) at a public HTTP MCP URL.
+          # STATELESS by design: no --heap-store / --fs-store / --session-db —
+          # each run_js is a fresh isolate with no cross-call/cross-session
+          # state (and heap snapshots are mutually exclusive with WASM anyway,
+          # so a wasm build MUST be stateless). No volume, no persistence, so
+          # it's trivially multi-tenant and horizontally scalable.
+          #
+          # PUBLIC + UNAUTHENTICATED as requested. mcp-v8 does NOT enforce auth
+          # (--jwks-url only logs) and fetch() is allow-all, so anyone with the
+          # URL gets arbitrary compute + egress. Acceptable ONLY because the
+          # engines are the product and there's no persisted state to steal;
+          # do not point secrets/credentials at it. No hardening flags — some
+          # (remove-bootstrap / remove-shared-memory) break the WASM runtime,
+          # and hardening wouldn't blunt the fetch-abuse risk regardless.
+          #
+          # Reachable at https://<domain>/mcp; clients send X-MCP-Session-Id
+          # per caller (keeps the stateless isolates from sharing the /work
+          # scratch dir within a session). bootstrap.js loads from
+          # /opt/languages (read-only); see the languages skill for the API.
+          mcpV8LanguagesServiceImage = pkgs.dockerTools.streamLayeredImage {
+            name = "ghcr.io/r33drichards/nanocodex-mcp-v8-languages-service";
+            tag = "latest";
+            contents = [
+              rootfs
+              languagesOpt
+              pkgs.cacert
+              pkgs.bashInteractive
+              pkgs.coreutils
+              pkgs.curl
+            ];
+            fakeRootCommands = ''
+              chmod 1777 tmp
+              mkdir -p work
+              chmod 1777 work
+            '';
+            config = {
+              Entrypoint = [ "/usr/local/bin/mcp-v8" ];
+              Cmd = [
+                "--http-port" "8080"
+                "--bind-host" "0.0.0.0"
+                "--policies-json" "/opt/languages/policies.json"
+                # bootstrap.js is ~7.4MB of source; the default 8MB heap OOMs
+                # on (0,eval). See client sandbox.py _WASM_HEAP_MEMORY_MAX_MB.
+                "--heap-memory-max" "256"
+                "--wasm-module" "picat=/opt/languages/picat.wasm:512m"
+                "--wasm-module" "tla=/opt/languages/tla_checker.wasm:512m"
+                "--wasm-module" "minizinc=/opt/languages/minizinc.wasm:1g"
+                "--wasm-module" "autolisp=/opt/languages/acadlisp.wasm:512m"
+                "--wasm-module" "lua=/opt/languages/lua.wasm:512m"
+                "--wasm-module" "craftos=/opt/languages/craftos.wasm:512m"
+              ];
+              Env = [
+                "PATH=/usr/local/bin:/bin"
+                "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
+                "NIX_SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
+              ];
+              ExposedPorts."8080/tcp" = { };
+            };
+          };
         in
         {
           inherit codex-app-server image;
           mcp-v8 = mcpV8;
+          mcp-v8-service = mcpV8ServiceImage;
+          mcp-v8-languages-service = mcpV8LanguagesServiceImage;
           bridge = bridgeEnv;
           slackbot = slackbotApp;
           frontend = frontendApp;

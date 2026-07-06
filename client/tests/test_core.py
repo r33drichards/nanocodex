@@ -8,24 +8,39 @@ thread/list paging, and the naive passthrough.
 Run: client/.venv/bin/python -m pytest client/tests -q   (or just python -m unittest)
 """
 
-import asyncio
 import json
 import unittest
 
 import websockets
-
 from nanocodex_client.core import Nanocodex, RpcError, SandboxSpec, thread_transcript
 
 
 def _adjacent(args, a, b):
     return any(args[i] == a and args[i + 1] == b for i in range(len(args) - 1))
 
+
 THREAD = {
-    "id": "t-1", "sessionId": "s-1", "forkedFromId": None, "parentThreadId": None,
-    "preview": "hi", "ephemeral": False, "modelProvider": "azure", "createdAt": 0,
-    "updatedAt": 0, "recencyAt": None, "status": {"type": "idle"}, "path": None,
-    "cwd": "/tmp", "cliVersion": "0", "source": "appServer", "threadSource": None,
-    "agentNickname": None, "agentRole": None, "gitInfo": None, "name": None, "turns": [],
+    "id": "t-1",
+    "sessionId": "s-1",
+    "forkedFromId": None,
+    "parentThreadId": None,
+    "preview": "hi",
+    "ephemeral": False,
+    "modelProvider": "azure",
+    "createdAt": 0,
+    "updatedAt": 0,
+    "recencyAt": None,
+    "status": {"type": "idle"},
+    "path": None,
+    "cwd": "/tmp",
+    "cliVersion": "0",
+    "source": "appServer",
+    "threadSource": None,
+    "agentNickname": None,
+    "agentRole": None,
+    "gitInfo": None,
+    "name": None,
+    "turns": [],
 }
 
 
@@ -44,41 +59,103 @@ async def fake_server(ws):
             # echo the sandbox config back through preview for assertion
             cmd = params.get("config", {}).get("mcp_servers", {}).get("js", {})
             thread = {**THREAD, "preview": json.dumps(cmd.get("args", []))}
-            await send({"id": mid, "result": {"thread": thread, "model": "gpt-5.4",
-                                              "modelProvider": "azure", "serviceTier": None,
-                                              "cwd": "/tmp"}})
+            await send(
+                {
+                    "id": mid,
+                    "result": {
+                        "thread": thread,
+                        "model": "gpt-5.4",
+                        "modelProvider": "azure",
+                        "serviceTier": None,
+                        "cwd": "/tmp",
+                    },
+                }
+            )
         elif method == "turn/start":
-            await send({"id": mid, "result": {"turn": {"id": "turn-1", "items": [],
-                                                       "itemsView": "notLoaded",
-                                                       "status": "inProgress", "error": None}}})
-            await send({"method": "item/completed", "params": {
-                "threadId": "t-1", "turnId": "turn-1",
-                "item": {"type": "mcpToolCall", "id": "i1", "status": "completed",
-                         "invocation": {"server": "js", "tool": "run_js"}}}})
-            await send({"method": "item/completed", "params": {
-                "threadId": "t-1", "turnId": "turn-1",
-                "item": {"type": "agentMessage", "id": "i2", "text": "42"}}})
-            await send({"method": "turn/completed", "params": {
-                "threadId": "t-1",
-                "turn": {"id": "turn-1", "items": [], "itemsView": "notLoaded",
-                         "status": "completed", "error": None}}})
+            await send(
+                {
+                    "id": mid,
+                    "result": {
+                        "turn": {
+                            "id": "turn-1",
+                            "items": [],
+                            "itemsView": "notLoaded",
+                            "status": "inProgress",
+                            "error": None,
+                        }
+                    },
+                }
+            )
+            await send(
+                {
+                    "method": "item/completed",
+                    "params": {
+                        "threadId": "t-1",
+                        "turnId": "turn-1",
+                        "item": {
+                            "type": "mcpToolCall",
+                            "id": "i1",
+                            "status": "completed",
+                            "invocation": {"server": "js", "tool": "run_js"},
+                        },
+                    },
+                }
+            )
+            await send(
+                {
+                    "method": "item/completed",
+                    "params": {
+                        "threadId": "t-1",
+                        "turnId": "turn-1",
+                        "item": {"type": "agentMessage", "id": "i2", "text": "42"},
+                    },
+                }
+            )
+            await send(
+                {
+                    "method": "turn/completed",
+                    "params": {
+                        "threadId": "t-1",
+                        "turn": {
+                            "id": "turn-1",
+                            "items": [],
+                            "itemsView": "notLoaded",
+                            "status": "completed",
+                            "error": None,
+                        },
+                    },
+                }
+            )
         elif method == "turn/steer":
             await send({"id": mid, "result": {"queued": True}})
         elif method == "thread/read":
-            thread = {**THREAD, "turns": [{
-                "id": "turn-1", "itemsView": "loaded", "status": "completed", "error": None,
-                "items": [
-                    {"type": "userMessage", "id": "u1",
-                     "content": [{"type": "text", "text": "compute 6*7"}]},
-                    {"type": "agentMessage", "id": "a1", "text": "42"},
-                ]}]}
+            thread = {
+                **THREAD,
+                "turns": [
+                    {
+                        "id": "turn-1",
+                        "itemsView": "loaded",
+                        "status": "completed",
+                        "error": None,
+                        "items": [
+                            {
+                                "type": "userMessage",
+                                "id": "u1",
+                                "content": [{"type": "text", "text": "compute 6*7"}],
+                            },
+                            {"type": "agentMessage", "id": "a1", "text": "42"},
+                        ],
+                    }
+                ],
+            }
             await send({"id": mid, "result": {"thread": thread}})
         elif method == "thread/list":
             # Matches the real app-server envelope: page under `data`, plus
             # `nextCursor` / `backwardsCursor` (NOT a `threads` key).
             if params.get("cursor"):
-                await send({"id": mid, "result": {"data": [{**THREAD, "id": "t-2"}],
-                                                  "nextCursor": None}})
+                await send(
+                    {"id": mid, "result": {"data": [{**THREAD, "id": "t-2"}], "nextCursor": None}}
+                )
             else:
                 await send({"id": mid, "result": {"data": [THREAD], "nextCursor": "page2"}})
         elif method == "boom":
@@ -159,10 +236,14 @@ class SandboxSpecTest(unittest.TestCase):
         # writes the file, then execs mcp-v8 with the resolved args as "$@"
         self.assertIn("> /tmp/nanocodex/fetch.rego", script)
         self.assertTrue(script.rstrip().endswith('exec /usr/local/bin/mcp-v8 "$@"'))
-        self.assertEqual(cfg["args"][2:5], ["mcp-v8", "--policies-json", "/tmp/nanocodex/policies.json"])
+        self.assertEqual(
+            cfg["args"][2:5], ["mcp-v8", "--policies-json", "/tmp/nanocodex/policies.json"]
+        )
         self.assertIn("--session-db-path", cfg["args"])
         # content travels through env, not argv
-        self.assertEqual(cfg["env"]["NANOCODEX_FILE_0"], "package mcp.fetch\ndefault allow = false\n")
+        self.assertEqual(
+            cfg["env"]["NANOCODEX_FILE_0"], "package mcp.fetch\ndefault allow = false\n"
+        )
 
     def test_with_policy_files_helper(self):
         spec = SandboxSpec.with_policy_files(
@@ -177,9 +258,12 @@ class SandboxSpecTest(unittest.TestCase):
     def test_config_written_as_toml_and_passed_via_flag(self):
         import tomllib
 
-        cfg = {"policies": {"fetch": {"mode": "all",
-                                      "policies": [{"url": "file:///tmp/nanocodex/f.rego"}]}},
-               "fetch_headers": [{"host": "a.com", "headers": {"Authorization": "Bearer x"}}]}
+        cfg = {
+            "policies": {
+                "fetch": {"mode": "all", "policies": [{"url": "file:///tmp/nanocodex/f.rego"}]}
+            },
+            "fetch_headers": [{"host": "a.com", "headers": {"Authorization": "Bearer x"}}],
+        }
         spec = SandboxSpec(config=cfg, bearer=[("b.com", "tok")])
         js = spec.to_config()["mcp_servers"]["js"]
         self.assertEqual(js["command"], "/bin/sh")

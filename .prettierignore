@@ -1,0 +1,9 @@
+# Prettier scope is JS/TS/CSS in the app packages only (see the `prettier` job
+# in .github/workflows/ci.yml). These paths are excluded for good measure.
+node_modules/
+**/node_modules/
+.next/
+**/.next/
+**/*-lock.json
+# Generated protobuf output (betterproto) — not hand-maintained.
+client/nanocodex_client/proto/
