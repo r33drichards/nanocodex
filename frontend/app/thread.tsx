@@ -81,6 +81,18 @@ function codeFromArgs(args: any, argsText?: string): string {
   return argsText ?? "";
 }
 
+// Bundled skills the agent consults are just fs reads of a SKILL.md under
+// /opt/languages/skills — surface them as an explicit signifier so "invoking a
+// skill" is visible instead of buried in the run_js code. Captures the skill
+// path (e.g. "craftos-sim" or "superpowers/systematic-debugging").
+function skillsInCode(code: string): string[] {
+  const re = /\/opt\/languages\/skills\/(.+?)\/SKILL\.md/g;
+  const found = new Set<string>();
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(code))) found.add(m[1]);
+  return [...found];
+}
+
 // Default tool renderer for anything without a TOOL_RENDERERS entry — codex
 // namespaces tools (`js.run_js`, `js.get_execution_output`), so this catches
 // the whole sandbox family.
@@ -89,13 +101,34 @@ function RunJsCard({ toolName, args, argsText, result, status }: any) {
   const code = codeFromArgs(args, argsText);
   const done = status?.type === "complete";
   const value = done ? unwrapResult(result) : "";
+  const skills = useMemo(() => skillsInCode(code), [code]);
   return (
-    <div className="run-js-card" data-testid="run-js-card" data-tool={toolName}>
+    <div
+      className="run-js-card"
+      data-testid="run-js-card"
+      data-tool={toolName}
+      data-running={!done}
+    >
       <div className="rj-head" onClick={() => setOpen((o) => !o)}>
         <span>{open ? "▾" : "▸"}</span>
         <span className="rj-name">{toolName}</span>
-        <span className="rj-status" data-testid="run-js-status">
-          {status?.type ?? ""}
+        {skills.map((s) => (
+          <span
+            key={s}
+            className="rj-skill"
+            data-testid="rj-skill"
+            title={`consulting the ${s} skill`}
+          >
+            📖 {s}
+          </span>
+        ))}
+        <span
+          className="rj-status"
+          data-testid="run-js-status"
+          data-state={done ? "complete" : "running"}
+        >
+          {done ? "complete" : <span className="rj-spinner" aria-label="running" />}
+          {!done ? " running" : ""}
         </span>
       </div>
       {open && (
@@ -109,6 +142,23 @@ function RunJsCard({ toolName, args, argsText, result, status }: any) {
           ) : null}
         </>
       )}
+    </div>
+  );
+}
+
+// codex `reasoning` items (empty for models that don't stream a thinking
+// summary, e.g. glm; populated for gpt-5-codex) — a collapsible block so the
+// model's thinking is visible when present. The bridge maps reasoning content
+// to AG-UI reasoning parts.
+function ReasoningPart({ text }: { text?: string }) {
+  const [open, setOpen] = useState(false);
+  if (!text) return null;
+  return (
+    <div className="reasoning-part" data-testid="reasoning-part">
+      <div className="reasoning-head" onClick={() => setOpen((o) => !o)}>
+        <span>{open ? "▾" : "▸"}</span> 💭 thinking
+      </div>
+      {open ? <pre className="reasoning-text">{text}</pre> : null}
     </div>
   );
 }
@@ -268,6 +318,7 @@ function ImagePart({ image }: { image: string }) {
 const messageComponents = {
   Text: TextPart,
   Image: ImagePart,
+  Reasoning: ReasoningPart,
   tools: { Fallback: ToolCallPart },
 };
 
@@ -617,6 +668,21 @@ export function NanocodexThread({
           </div>
         </ThreadPrimitive.Empty>
         <ThreadPrimitive.Messages components={{ UserMessage, AssistantMessage }} />
+        {/* Live activity signifier: codex/glm streams tool calls and text but
+            no reasoning items, so the turn looks idle between events. Show a
+            running pulse whenever a turn is active so "thinking / working" is
+            always visible; per-tool status + skill badges above give the
+            specifics. */}
+        <ThreadPrimitive.If running>
+          <div className="working-indicator" data-testid="working-indicator">
+            <span className="working-dots">
+              <i />
+              <i />
+              <i />
+            </span>
+            <span className="working-label">nanocodex is working…</span>
+          </div>
+        </ThreadPrimitive.If>
       </ThreadPrimitive.Viewport>
       <Composer steer={steer} />
     </ThreadPrimitive.Root>
