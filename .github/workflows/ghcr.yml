@@ -73,12 +73,12 @@ jobs:
           # bridge (client/) is in every supervisord image; frontend,
           # slackbot and the language engines only in their variants).
           declare -A want=()
-          [ "$CORE" = true ] && for a in image mcp-v8-service languages standalone standalone-frontend standalone-slack standalone-full slack-remote standalone-languages; do want[$a]=1; done
+          [ "$CORE" = true ] && for a in image mcp-v8-service mcp-v8-languages-service languages standalone standalone-frontend standalone-slack standalone-full slack-remote standalone-languages; do want[$a]=1; done
           [ "$CLIENT" = true ] && for a in standalone standalone-frontend standalone-slack standalone-full slack-remote standalone-languages; do want[$a]=1; done
           [ "$FRONTEND" = true ] && for a in standalone-frontend standalone-full standalone-languages; do want[$a]=1; done
           [ "$SLACKBOT" = true ] && for a in standalone-slack standalone-full slack-remote; do want[$a]=1; done
           [ "$LANGUAGES" = true ] && for a in languages standalone-languages; do want[$a]=1; done
-          attrs=$(for a in image mcp-v8-service languages standalone standalone-frontend standalone-slack standalone-full slack-remote standalone-languages; do
+          attrs=$(for a in image mcp-v8-service mcp-v8-languages-service languages standalone standalone-frontend standalone-slack standalone-full slack-remote standalone-languages; do
             [ -n "${want[$a]:-}" ] && echo "$a"; done | jq -R . | jq -sc .)
           echo "attrs=$attrs" | tee -a "$GITHUB_OUTPUT"
 

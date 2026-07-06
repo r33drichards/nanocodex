@@ -680,11 +680,73 @@
               Volumes."/data" = { };
             };
           };
+
+          # Dedicated LANGUAGES mcp-v8 service: run_js + the six WASM engines
+          # (picat/tla/minizinc/autolisp/lua/craftos) at a public HTTP MCP URL.
+          # STATELESS by design: no --heap-store / --fs-store / --session-db —
+          # each run_js is a fresh isolate with no cross-call/cross-session
+          # state (and heap snapshots are mutually exclusive with WASM anyway,
+          # so a wasm build MUST be stateless). No volume, no persistence, so
+          # it's trivially multi-tenant and horizontally scalable.
+          #
+          # PUBLIC + UNAUTHENTICATED as requested. mcp-v8 does NOT enforce auth
+          # (--jwks-url only logs) and fetch() is allow-all, so anyone with the
+          # URL gets arbitrary compute + egress. Acceptable ONLY because the
+          # engines are the product and there's no persisted state to steal;
+          # do not point secrets/credentials at it. No hardening flags — some
+          # (remove-bootstrap / remove-shared-memory) break the WASM runtime,
+          # and hardening wouldn't blunt the fetch-abuse risk regardless.
+          #
+          # Reachable at https://<domain>/mcp; clients send X-MCP-Session-Id
+          # per caller (keeps the stateless isolates from sharing the /work
+          # scratch dir within a session). bootstrap.js loads from
+          # /opt/languages (read-only); see the languages skill for the API.
+          mcpV8LanguagesServiceImage = pkgs.dockerTools.streamLayeredImage {
+            name = "ghcr.io/r33drichards/nanocodex-mcp-v8-languages-service";
+            tag = "latest";
+            contents = [
+              rootfs
+              languagesOpt
+              pkgs.cacert
+              pkgs.bashInteractive
+              pkgs.coreutils
+              pkgs.curl
+            ];
+            fakeRootCommands = ''
+              chmod 1777 tmp
+              mkdir -p work
+              chmod 1777 work
+            '';
+            config = {
+              Entrypoint = [ "/usr/local/bin/mcp-v8" ];
+              Cmd = [
+                "--http-port" "8080"
+                "--bind-host" "0.0.0.0"
+                "--policies-json" "/opt/languages/policies.json"
+                # bootstrap.js is ~7.4MB of source; the default 8MB heap OOMs
+                # on (0,eval). See client sandbox.py _WASM_HEAP_MEMORY_MAX_MB.
+                "--heap-memory-max" "256"
+                "--wasm-module" "picat=/opt/languages/picat.wasm:512m"
+                "--wasm-module" "tla=/opt/languages/tla_checker.wasm:512m"
+                "--wasm-module" "minizinc=/opt/languages/minizinc.wasm:1g"
+                "--wasm-module" "autolisp=/opt/languages/acadlisp.wasm:512m"
+                "--wasm-module" "lua=/opt/languages/lua.wasm:512m"
+                "--wasm-module" "craftos=/opt/languages/craftos.wasm:512m"
+              ];
+              Env = [
+                "PATH=/usr/local/bin:/bin"
+                "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
+                "NIX_SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
+              ];
+              ExposedPorts."8080/tcp" = { };
+            };
+          };
         in
         {
           inherit codex-app-server image;
           mcp-v8 = mcpV8;
           mcp-v8-service = mcpV8ServiceImage;
+          mcp-v8-languages-service = mcpV8LanguagesServiceImage;
           bridge = bridgeEnv;
           slackbot = slackbotApp;
           frontend = frontendApp;
