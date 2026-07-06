@@ -393,6 +393,22 @@ function M.install(world)
     return record(v and true or false, msg or "assertTrue")
   end
 
+  -- World post-conditions. `world.test(sim)` is an optional function that runs
+  -- AFTER the program under test, for asserting final state. The standalone
+  -- harness.lua calls it directly; the multi-node wasm runner (ccsim) has no
+  -- postlude, so it exposes it here as `sim.runTest()` for a postlude to invoke.
+  -- Errors thrown inside world.test count as one failure (matches harness.lua).
+  sim.hasTest = type(world.test) == "function"
+  function sim.runTest()
+    if type(world.test) ~= "function" then return sim.passed, sim.failed end
+    local ok, err = pcall(world.test, sim)
+    if not ok then
+      sim.failed = sim.failed + 1
+      sim.log[#sim.log + 1] = "  FAIL - world.test error: " .. tostring(err)
+    end
+    return sim.passed, sim.failed
+  end
+
   _G.turtle = turtle
   _G.sim = sim
   return turtle, sim
