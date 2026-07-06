@@ -10,7 +10,7 @@
     # mcp-v8: v0.18.1 (--config, OAuth fetch headers) plus the stdio-cluster and
     # --session-id patches needed for the per-thread learner topology. Same
     # Cargo.lock as v0.18.1, so the flake's vendor hash still applies.
-    mcp-js.url = "github:r33drichards/mcp-js/claude/stdio-cluster-learner";
+    mcp-js.url = "github:r33drichards/mcp-js/claude/http-allowed-hosts";
     # codex fork: source only — its in-tree flake builds the whole workspace,
     # which can't vendor hermetically (libwebrtc git submodule, no v8
     # archive). We build just the codex-app-server binary ourselves; that
@@ -686,6 +686,12 @@
               Cmd = [
                 "--http-port" "8080"
                 "--bind-host" "0.0.0.0"
+                # This is an intentionally public, unauthed service reached over a
+                # Railway domain, so rmcp's default Host allowlist (loopback only)
+                # would 403 every external request. Accept any Host. The service
+                # is public by design, so Host-based DNS-rebind protection buys
+                # nothing here (mcp-js claude/http-allowed-hosts adds this flag).
+                "--http-allow-any-host"
                 "--policies-json" "/opt/languages/policies.json"
                 # bootstrap.js is ~7.4MB of source; the default 8MB heap OOMs
                 # on (0,eval). See client sandbox.py _WASM_HEAP_MEMORY_MAX_MB.
