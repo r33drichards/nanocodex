@@ -168,7 +168,10 @@ const TOOL_RENDERERS: Record<string, ComponentType<any>> = {
 };
 
 function ToolCallPart(props: any) {
-  const bare = String(props.toolName ?? "").split(".").pop() ?? "";
+  const bare =
+    String(props.toolName ?? "")
+      .split(".")
+      .pop() ?? "";
   const Renderer = TOOL_RENDERERS[bare];
   return Renderer ? <Renderer {...props} /> : <RunJsCard {...props} />;
 }
@@ -200,7 +203,12 @@ function UserMessage() {
           {({ attachment }) => {
             const img = (attachment.content ?? []).find((c: any) => c.type === "image") as any;
             return img?.image ? (
-              <img src={img.image} className="msg-image" data-testid="message-image" alt={attachment.name ?? "attached image"} />
+              <img
+                src={img.image}
+                className="msg-image"
+                data-testid="message-image"
+                alt={attachment.name ?? "attached image"}
+              />
             ) : null;
           }}
         </MessagePrimitive.Attachments>
@@ -529,9 +537,7 @@ export function NanocodexThread({
             Start a turn. Code runs in the per-thread mcp-v8 sandbox via <code>run_js</code>.
           </div>
         </ThreadPrimitive.Empty>
-        <ThreadPrimitive.Messages
-          components={{ UserMessage, AssistantMessage }}
-        />
+        <ThreadPrimitive.Messages components={{ UserMessage, AssistantMessage }} />
       </ThreadPrimitive.Viewport>
       <Composer steer={steer} />
     </ThreadPrimitive.Root>

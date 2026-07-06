@@ -93,9 +93,7 @@ export default function Page() {
   // (we adopt after the next run instead).
   const onRunComplete = useCallback(async () => {
     try {
-      const r = await fetch(
-        `${BRIDGE}/agui/threads/${encodeURIComponent(agent.threadId)}`,
-      );
+      const r = await fetch(`${BRIDGE}/agui/threads/${encodeURIComponent(agent.threadId)}`);
       if (r.ok) {
         const d = await r.json();
         if (d.codexThreadId && d.codexThreadId !== agent.threadId) {

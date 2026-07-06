@@ -22,8 +22,16 @@ from .proto.nanocodex.v1 import SandboxSpec as PbSandboxSpec
 _EVAL_MODE = {EvalMode.ALL: "all", EvalMode.ANY: "any"}
 
 _SCALAR_FIELDS = (
-    "http_port", "sse_port", "bind_host", "heap_memory_max", "execution_timeout",
-    "max_concurrent_executions", "heap_store", "heap_dir", "fs_store", "fs_dir",
+    "http_port",
+    "sse_port",
+    "bind_host",
+    "heap_memory_max",
+    "execution_timeout",
+    "max_concurrent_executions",
+    "heap_store",
+    "heap_dir",
+    "fs_store",
+    "fs_dir",
 )
 
 
@@ -49,9 +57,13 @@ def _policies(pb) -> Optional[dict]:
     if pb is None:
         return None
     ops = {
-        "fetch": pb.fetch, "modules": pb.modules, "filesystem": pb.filesystem,
-        "fs_snapshot": pb.fs_snapshot, "mcp_tools": pb.mcp_tools,
-        "subprocess": pb.subprocess, "run_js_file": pb.run_js_file,
+        "fetch": pb.fetch,
+        "modules": pb.modules,
+        "filesystem": pb.filesystem,
+        "fs_snapshot": pb.fs_snapshot,
+        "mcp_tools": pb.mcp_tools,
+        "subprocess": pb.subprocess,
+        "run_js_file": pb.run_js_file,
     }
     out = {}
     for key, op in ops.items():
@@ -102,8 +114,12 @@ def mcpv8_config_to_dict(pb: PbMcpV8Config) -> dict:
             entry: dict = {"name": s.name}
             if which == "stdio":
                 t = s.stdio
-                entry["transport"] = {"type": "stdio", "command": t.command,
-                                      "args": list(t.args), "env": dict(t.env)}
+                entry["transport"] = {
+                    "type": "stdio",
+                    "command": t.command,
+                    "args": list(t.args),
+                    "env": dict(t.env),
+                }
             elif which == "sse_url":
                 entry["transport"] = {"type": "sse", "url": s.sse_url}
             servers.append(entry)

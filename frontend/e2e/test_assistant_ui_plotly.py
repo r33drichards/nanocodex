@@ -52,8 +52,11 @@ def test_assistant_ui_plotly():
         page.reload(wait_until="networkidle")
         page.wait_for_timeout(1500)
         item = next(
-            (it for it in page.query_selector_all("[data-testid=thread-list-item]")
-             if "render_plotly" in it.inner_text()),
+            (
+                it
+                for it in page.query_selector_all("[data-testid=thread-list-item]")
+                if "render_plotly" in it.inner_text()
+            ),
             None,
         )
         assert item, "the plotly thread is not in the reloaded (codex-backed) list"

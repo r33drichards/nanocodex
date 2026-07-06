@@ -61,11 +61,7 @@ class SandboxPresetTest(_EnvMixin):
         # WASM x heap snapshots are mutually exclusive in mcp-v8: no heap flags.
         self.assertNotIn("--heap-store", spec.args)
         self.assertNotIn("--heap-dir", spec.args)
-        modules = [
-            spec.args[i + 1]
-            for i, a in enumerate(spec.args)
-            if a == "--wasm-module"
-        ]
+        modules = [spec.args[i + 1] for i, a in enumerate(spec.args) if a == "--wasm-module"]
         self.assertEqual(
             sorted(m.split("=")[0] for m in modules),
             ["autolisp", "craftos", "lua", "minizinc", "picat", "tla"],
@@ -102,9 +98,7 @@ class SandboxPresetTest(_EnvMixin):
         self.assertGreaterEqual(int(hm), 128)
         # Each engine is exposed as a discoverable stub tool with a description.
         stub_descs = [
-            spec.args[i + 1]
-            for i, a in enumerate(spec.args)
-            if a == "--wasm-stub-description"
+            spec.args[i + 1] for i, a in enumerate(spec.args) if a == "--wasm-stub-description"
         ]
         self.assertEqual(len(stub_descs), 6)
         self.assertTrue(any(d.startswith("craftos=") for d in stub_descs))
@@ -129,6 +123,20 @@ class SandboxPresetTest(_EnvMixin):
         self.assertEqual(spec.raw["default_tools_approval_mode"], "approve")
         cfg = spec.to_config()
         self.assertEqual(cfg["mcp_servers"]["js"], spec.raw)
+
+    def test_remote_preset_bearer_token_optional(self):
+        os.environ["NANOCODEX_SANDBOX"] = "remote"
+        os.environ[REMOTE_URL_ENV] = "http://mcp-v8.internal:8080/mcp"
+        # No token -> no Authorization header (private/internal remote).
+        os.environ.pop("NANOCODEX_MCP_V8_TOKEN", None)
+        spec = sandbox_for("sid-5")
+        self.assertNotIn("Authorization", spec.raw["http_headers"])
+        # Token set -> bearer header alongside the session id (authed remote).
+        os.environ["NANOCODEX_MCP_V8_TOKEN"] = "s3cret"
+        spec = sandbox_for("sid-5")
+        self.assertEqual(spec.raw["http_headers"]["Authorization"], "Bearer s3cret")
+        self.assertEqual(spec.raw["http_headers"]["X-MCP-Session-Id"], "sid-5")
+        os.environ.pop("NANOCODEX_MCP_V8_TOKEN", None)
 
     def test_remote_preset_approvals(self):
         os.environ["NANOCODEX_SANDBOX"] = "remote"

@@ -69,7 +69,9 @@ def test_assistant_ui_codex_threads():
         # 3. clicking the reloaded thread rehydrates its transcript from codex.
         new_item.click()
         page.wait_for_timeout(1500)
-        assert page.query_selector("[data-testid=run-js-card]"), "reloaded thread lost its run_js card"
+        assert page.query_selector("[data-testid=run-js-card]"), (
+            "reloaded thread lost its run_js card"
+        )
         assert page.query_selector_all("[data-testid=user-message]"), "history did not hydrate"
 
         assert not errors, f"page errors: {errors[:5]}"

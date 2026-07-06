@@ -28,6 +28,8 @@ MCP_V8_BIN = "/usr/local/bin/mcp-v8"
 
 def server_url() -> str:
     return os.environ.get("NANOCODEX_URL", DEFAULT_URL)
+
+
 POLICIES_JSON = "/app/policies/policies.json"
 
 
@@ -321,9 +323,16 @@ class Nanocodex:
         headers = {"Authorization": f"Bearer {token}"} if token else {}
         ws = await websockets.connect(url, additional_headers=headers, max_size=32 * 1024 * 1024)
         self = cls(ws, url)
-        await self.request("initialize", {
-            "clientInfo": {"name": "nanocodex-client", "title": "nanocodex client", "version": "0.1.0"},
-        })
+        await self.request(
+            "initialize",
+            {
+                "clientInfo": {
+                    "name": "nanocodex-client",
+                    "title": "nanocodex client",
+                    "version": "0.1.0",
+                },
+            },
+        )
         await self.notify("initialized")
         return self
 
@@ -422,9 +431,14 @@ class Nanocodex:
         return NotificationStream(self, q, thread_id)
 
     # ── thread ops ───────────────────────────────────────────────────────
-    async def create_thread(self, sandbox: SandboxSpec | None = None, model: str | None = None,
-                            cwd: str = "/tmp", developer_instructions: str | None = None,
-                            extra_mcp_servers: dict | None = None) -> dict:
+    async def create_thread(
+        self,
+        sandbox: SandboxSpec | None = None,
+        model: str | None = None,
+        cwd: str = "/tmp",
+        developer_instructions: str | None = None,
+        extra_mcp_servers: dict | None = None,
+    ) -> dict:
         """`extra_mcp_servers` merges additional per-thread MCP servers (e.g.
         the agui bridge's `ui` generative-UI server) next to the sandbox's `js`."""
         config = (sandbox or SandboxSpec()).to_config()
@@ -464,11 +478,14 @@ class Nanocodex:
                 return
 
     async def read_thread(self, thread_id: str, include_turns: bool = True) -> dict:
-        resp = await self.request("thread/read", {"threadId": thread_id, "includeTurns": include_turns})
+        resp = await self.request(
+            "thread/read", {"threadId": thread_id, "includeTurns": include_turns}
+        )
         return resp["thread"]
 
-    async def start_turn(self, thread_id: str, text: str | None = None,
-                         input: list[dict] | None = None) -> dict:
+    async def start_turn(
+        self, thread_id: str, text: str | None = None, input: list[dict] | None = None
+    ) -> dict:
         """Start a turn. Pass `text` for a simple text turn, or `input` with a
         full codex UserInput list (e.g. text + image parts) for multimodal."""
         items = input if input is not None else [{"type": "text", "text": text or ""}]
@@ -477,13 +494,17 @@ class Nanocodex:
 
     async def steer_turn(self, thread_id: str, text: str) -> Any:
         """Inject input into the thread's in-flight turn."""
-        return await self.request("turn/steer", {
-            "threadId": thread_id,
-            "input": [{"type": "text", "text": text}],
-        })
+        return await self.request(
+            "turn/steer",
+            {
+                "threadId": thread_id,
+                "input": [{"type": "text", "text": text}],
+            },
+        )
 
-    async def run_turn(self, thread_id: str, text: str, timeout: float = 600.0,
-                       on_event=None) -> dict:
+    async def run_turn(
+        self, thread_id: str, text: str, timeout: float = 600.0, on_event=None
+    ) -> dict:
         """Start a turn and collect it to completion.
 
         Returns {"turn": ..., "items": [...], "agent_messages": [...]}.
@@ -501,12 +522,17 @@ class Nanocodex:
                             await res
                     if method == "item/completed":
                         items.append(params.get("item", {}))
-                    elif method == "turn/completed" and params.get("turn", {}).get("id") == turn["id"]:
+                    elif (
+                        method == "turn/completed"
+                        and params.get("turn", {}).get("id") == turn["id"]
+                    ):
                         final = params["turn"]
                         return {
                             "turn": final,
                             "items": items,
-                            "agent_messages": [i.get("text", "") for i in items if i.get("type") == "agentMessage"],
+                            "agent_messages": [
+                                i.get("text", "") for i in items if i.get("type") == "agentMessage"
+                            ],
                         }
             raise RuntimeError("notification stream ended before turn completed")
         finally:
@@ -541,6 +567,7 @@ class NotificationStream:
 
 
 # ── transcript rendering (shared by CLI / API / MCP) ─────────────────────
+
 
 def item_to_text(item: dict, verbose: bool = False) -> str | None:
     itype = item.get("type")

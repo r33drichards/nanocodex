@@ -11,9 +11,8 @@ codex id).
 import os
 import unittest
 
-from fastapi.testclient import TestClient
-
 import nanocodex_client.agui.router as R
+from fastapi.testclient import TestClient
 from nanocodex_client.core import RpcError
 
 
@@ -35,32 +34,50 @@ class FakeNC:
         FakeNC.resumed.append(thread_id)
         return {"thread": {"id": thread_id}}
 
-    async def create_thread(self, sandbox=None, cwd="/tmp", developer_instructions=None,
-                            extra_mcp_servers=None):
+    async def create_thread(
+        self, sandbox=None, cwd="/tmp", developer_instructions=None, extra_mcp_servers=None
+    ):
         FakeNC._n = getattr(FakeNC, "_n", 0) + 1
         tid = f"codex-new-{FakeNC._n}"
         FakeNC.existing.add(tid)
         FakeNC.created.append(tid)
-        FakeNC.create_calls.append({
-            "sandbox": sandbox, "instructions": developer_instructions,
-        })
+        FakeNC.create_calls.append(
+            {
+                "sandbox": sandbox,
+                "instructions": developer_instructions,
+            }
+        )
         FakeNC.extra_mcp_servers = extra_mcp_servers
         return {"thread": {"id": tid}}
 
     async def list_threads(self, limit=100):
-        return {"data": [
-            {"id": "codex-a", "preview": "hello a", "createdAt": 2},
-            {"id": "codex-b", "name": "Named B", "createdAt": 1},
-        ], "nextCursor": None}
+        return {
+            "data": [
+                {"id": "codex-a", "preview": "hello a", "createdAt": 2},
+                {"id": "codex-b", "name": "Named B", "createdAt": 1},
+            ],
+            "nextCursor": None,
+        }
 
     async def read_thread(self, thread_id, include_turns=True):
         FakeNC.read_calls.append(thread_id)
         if thread_id not in FakeNC.existing:
             raise RpcError("thread/read", {"code": -1, "message": "not found"})
-        return {"id": thread_id, "turns": [{"items": [
-            {"type": "userMessage", "id": "u1", "content": [{"type": "text", "text": "hi"}]},
-            {"type": "agentMessage", "id": "a1", "text": "Hi"},
-        ]}]}
+        return {
+            "id": thread_id,
+            "turns": [
+                {
+                    "items": [
+                        {
+                            "type": "userMessage",
+                            "id": "u1",
+                            "content": [{"type": "text", "text": "hi"}],
+                        },
+                        {"type": "agentMessage", "id": "a1", "text": "Hi"},
+                    ]
+                }
+            ],
+        }
 
     async def start_turn(self, thread_id, input=None):
         return {"id": "turn-1"}
@@ -68,6 +85,7 @@ class FakeNC:
     def notifications(self, thread_id):
         async def gen():
             yield ("turn/completed", {"turn": {"id": "turn-1"}})
+
         return gen()
 
     async def close(self):
@@ -116,19 +134,21 @@ class RouterTest(unittest.TestCase):
 
     def test_resolve_existing_codex_id_resumes_no_create(self):
         import asyncio
+
         nc = FakeNC()
         tid = asyncio.run(R._resolve_or_create(nc, "codex-a", approvals=False))
         self.assertEqual(tid, "codex-a")
-        self.assertEqual(FakeNC.created, [])           # resumed, not created
+        self.assertEqual(FakeNC.created, [])  # resumed, not created
         self.assertIn("codex-a", FakeNC.resumed)
         # identity is now bound for this session
         self.assertEqual(R._codex_id_for("codex-a"), "codex-a")
 
     def test_resolve_unknown_id_creates_and_binds(self):
         import asyncio
+
         nc = FakeNC()
         tid = asyncio.run(R._resolve_or_create(nc, "local-xyz", approvals=False))
-        self.assertEqual(FakeNC.created, [tid])        # a new codex thread
+        self.assertEqual(FakeNC.created, [tid])  # a new codex thread
         self.assertEqual(R._codex_id_for("local-xyz"), tid)  # local id -> codex id
         # Default deployment: heap persistence, no wasm engines.
         call = FakeNC.create_calls[-1]
@@ -140,6 +160,7 @@ class RouterTest(unittest.TestCase):
 
     def test_create_uses_deploy_time_languages_preset(self):
         import asyncio
+
         os.environ["NANOCODEX_SANDBOX"] = "languages"
         nc = FakeNC()
         asyncio.run(R._resolve_or_create(nc, "local-lang", approvals=False))
@@ -200,6 +221,7 @@ class RouterTest(unittest.TestCase):
 def _app():
     """Build a FastAPI app mounting only the router (no static web mount)."""
     from fastapi import FastAPI
+
     app = FastAPI()
     app.include_router(R.router)
     return app

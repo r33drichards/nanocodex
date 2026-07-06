@@ -223,7 +223,6 @@ docker run -d \
   -e AZURE_OPENAI_API_KEY=... \
   -v ./secrets/ws-token:/run/secrets/ws_token:ro \
   -v nanocodex-data:/data -v nanocodex-tmp:/tmp \
-  -v codex-sqlite:/codex-home/sqlite -v codex-sessions:/codex-home/sessions \
   -p 4500:4500 -p 3000:3000 -p 8130:8130 \
   ghcr.io/r33drichards/nanocodex-standalone-frontend
 ```
