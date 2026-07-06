@@ -37,7 +37,7 @@ env:
   # ghcr.io/r33drichards/nanocodex-mcp-v8-languages-service:latest, public
   # domain on 8080, NO volume — it is stateless) and paste its service id here.
   # While empty, the deploy job self-skips with a notice.
-  MCP_SERVICE_ID: ""
+  MCP_SERVICE_ID: f3a01210-dfd9-4bd9-b3a2-b45f9943e674
   # Shared Railway environment id (same as .github/workflows/deploy.yml).
   MCP_ENVIRONMENT_ID: 54e43c1d-7bd9-4ae7-8776-4f3304a5aab3
 
