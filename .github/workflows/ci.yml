@@ -166,7 +166,10 @@ jobs:
         run: |
           mapfile -t scripts < <(git ls-files '*.sh')
           printf 'checking: %s\n' "${scripts[@]}"
-          shellcheck "${scripts[@]}"
+          # SC2015 ("A && B || C is not if-then-else") is an info-level false
+          # positive for the intentional `[ cond ] && action || true` cleanup
+          # idiom in the e2e scripts. Everything else (SC2086, etc.) stays on.
+          shellcheck -e SC2015 "${scripts[@]}"
 
   # ── GitHub Actions workflows: actionlint (+ embedded shellcheck) ──────────
   actions:

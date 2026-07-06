@@ -46,7 +46,7 @@ for f in $(git ls-files '*.rego'); do opa check --strict "$f"; done  # OPA >= 1.
 ## Shell / GitHub Actions / Nix
 
 ```bash
-shellcheck $(git ls-files '*.sh')
+shellcheck -e SC2015 $(git ls-files '*.sh')
 actionlint                        # SHELLCHECK_OPTS=--exclude=SC2016
 nix flake check --no-build
 ```
