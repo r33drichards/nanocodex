@@ -21,8 +21,7 @@
  * in replies), which is the cue to update this helper.
  */
 
-const UUID_SUFFIX =
-  /-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UUID_SUFFIX = /-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function stableThreadId(perTurnThreadId: string): string {
   return perTurnThreadId.replace(UUID_SUFFIX, "");

@@ -61,11 +61,7 @@ class SandboxPresetTest(_EnvMixin):
         # WASM x heap snapshots are mutually exclusive in mcp-v8: no heap flags.
         self.assertNotIn("--heap-store", spec.args)
         self.assertNotIn("--heap-dir", spec.args)
-        modules = [
-            spec.args[i + 1]
-            for i, a in enumerate(spec.args)
-            if a == "--wasm-module"
-        ]
+        modules = [spec.args[i + 1] for i, a in enumerate(spec.args) if a == "--wasm-module"]
         self.assertEqual(
             sorted(m.split("=")[0] for m in modules),
             ["autolisp", "craftos", "lua", "minizinc", "picat", "tla"],
@@ -102,9 +98,7 @@ class SandboxPresetTest(_EnvMixin):
         self.assertGreaterEqual(int(hm), 128)
         # Each engine is exposed as a discoverable stub tool with a description.
         stub_descs = [
-            spec.args[i + 1]
-            for i, a in enumerate(spec.args)
-            if a == "--wasm-stub-description"
+            spec.args[i + 1] for i, a in enumerate(spec.args) if a == "--wasm-stub-description"
         ]
         self.assertEqual(len(stub_descs), 6)
         self.assertTrue(any(d.startswith("craftos=") for d in stub_descs))

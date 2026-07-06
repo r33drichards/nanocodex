@@ -21,16 +21,27 @@ class MapperTest(unittest.TestCase):
 
     def test_agent_message_text_stream(self):
         out = []
-        out += map_notification("item/started", {"item": {"type": "agentMessage", "id": "m1"}}, self.st)
+        out += map_notification(
+            "item/started", {"item": {"type": "agentMessage", "id": "m1"}}, self.st
+        )
         out += map_notification("item/agentMessage/delta", {"itemId": "m1", "delta": "hi"}, self.st)
-        out += map_notification("item/completed", {"item": {"type": "agentMessage", "id": "m1"}}, self.st)
-        self.assertEqual(types(out), ["TextMessageStartEvent", "TextMessageContentEvent", "TextMessageEndEvent"])
+        out += map_notification(
+            "item/completed", {"item": {"type": "agentMessage", "id": "m1"}}, self.st
+        )
+        self.assertEqual(
+            types(out), ["TextMessageStartEvent", "TextMessageContentEvent", "TextMessageEndEvent"]
+        )
         self.assertEqual(out[1].delta, "hi")
         self.assertEqual(out[0].role, "assistant")
 
     def test_mcp_tool_call_maps_start_args_end_result(self):
-        item = {"type": "mcpToolCall", "id": "c1", "server": "js", "tool": "run_js",
-                "arguments": {"code": "2+2"}}
+        item = {
+            "type": "mcpToolCall",
+            "id": "c1",
+            "server": "js",
+            "tool": "run_js",
+            "arguments": {"code": "2+2"},
+        }
         started = map_notification("item/started", {"item": item}, self.st)
         self.assertEqual(types(started), ["ToolCallStartEvent", "ToolCallArgsEvent"])
         self.assertEqual(started[0].tool_call_name, "js.run_js")
@@ -43,8 +54,7 @@ class MapperTest(unittest.TestCase):
         self.assertEqual(completed[1].tool_call_id, "c1")
 
     def test_tool_error_surfaces_in_result(self):
-        done = {"type": "mcpToolCall", "id": "c1", "status": "failed",
-                "error": {"message": "boom"}}
+        done = {"type": "mcpToolCall", "id": "c1", "status": "failed", "error": {"message": "boom"}}
         out = map_notification("item/completed", {"item": done}, self.st)
         self.assertIn("boom", out[1].content)
 
@@ -55,7 +65,9 @@ class MapperTest(unittest.TestCase):
         self.assertEqual(types(e), ["ReasoningMessageEndEvent"])
 
     def test_turn_completed_emits_usage_then_finished(self):
-        out = map_notification("turn/completed", {"turn": {"id": "x", "usage": {"total_tokens": 7}}}, self.st)
+        out = map_notification(
+            "turn/completed", {"turn": {"id": "x", "usage": {"total_tokens": 7}}}, self.st
+        )
         self.assertEqual(types(out), ["CustomEvent", "RunFinishedEvent"])
         self.assertEqual(out[0].name, "usage")
         self.assertEqual(out[0].value, {"total_tokens": 7})
@@ -76,39 +88,64 @@ class HistoryMapperTest(unittest.TestCase):
     THREAD = {
         "id": "019f-abc",
         "turns": [
-            {"items": [
-                {"type": "userMessage", "id": "u1",
-                 "content": [{"type": "text", "text": "say hi in one word"}]},
-                {"type": "reasoning", "id": "r1", "text": ""},
-                {"type": "agentMessage", "id": "a1", "text": "Hi"},
-            ]},
-            {"items": [
-                {"type": "userMessage", "id": "u2",
-                 "content": [{"type": "text", "text": "run it"}]},
-                {"type": "mcpToolCall", "id": "c1", "server": "js", "tool": "run_js",
-                 "arguments": {"code": "2+2"}, "result": "4"},
-                {"type": "agentMessage", "id": "a2", "text": "The answer is 4"},
-            ]},
+            {
+                "items": [
+                    {
+                        "type": "userMessage",
+                        "id": "u1",
+                        "content": [{"type": "text", "text": "say hi in one word"}],
+                    },
+                    {"type": "reasoning", "id": "r1", "text": ""},
+                    {"type": "agentMessage", "id": "a1", "text": "Hi"},
+                ]
+            },
+            {
+                "items": [
+                    {
+                        "type": "userMessage",
+                        "id": "u2",
+                        "content": [{"type": "text", "text": "run it"}],
+                    },
+                    {
+                        "type": "mcpToolCall",
+                        "id": "c1",
+                        "server": "js",
+                        "tool": "run_js",
+                        "arguments": {"code": "2+2"},
+                        "result": "4",
+                    },
+                    {"type": "agentMessage", "id": "a2", "text": "The answer is 4"},
+                ]
+            },
         ],
     }
 
     def test_history_flattens_turns_in_order(self):
         from nanocodex_client.agui.mapper import thread_to_agui_messages
+
         msgs = thread_to_agui_messages(self.THREAD)
         # reasoning dropped; tool call → assistant(toolCalls) + tool result
         self.assertEqual(
             [(m["role"], m["id"]) for m in msgs],
-            [("user", "u1"), ("assistant", "a1"),
-             ("user", "u2"), ("assistant", "c1-call"), ("tool", "c1"), ("assistant", "a2")],
+            [
+                ("user", "u1"),
+                ("assistant", "a1"),
+                ("user", "u2"),
+                ("assistant", "c1-call"),
+                ("tool", "c1"),
+                ("assistant", "a2"),
+            ],
         )
 
     def test_history_user_text_collapses_to_string(self):
         from nanocodex_client.agui.mapper import thread_to_agui_messages
+
         msgs = thread_to_agui_messages(self.THREAD)
         self.assertEqual(msgs[0]["content"], "say hi in one word")
 
     def test_history_tool_call_shape(self):
         from nanocodex_client.agui.mapper import thread_to_agui_messages
+
         msgs = thread_to_agui_messages(self.THREAD)
         call = next(m for m in msgs if m["id"] == "c1-call")
         tc = call["toolCalls"][0]
@@ -120,10 +157,23 @@ class HistoryMapperTest(unittest.TestCase):
 
     def test_history_user_with_image_becomes_parts(self):
         from nanocodex_client.agui.mapper import thread_to_agui_messages
-        t = {"turns": [{"items": [{"type": "userMessage", "id": "u1", "content": [
-            {"type": "text", "text": "what is this"},
-            {"type": "image", "url": "data:image/png;base64,QUJD"},
-        ]}]}]}
+
+        t = {
+            "turns": [
+                {
+                    "items": [
+                        {
+                            "type": "userMessage",
+                            "id": "u1",
+                            "content": [
+                                {"type": "text", "text": "what is this"},
+                                {"type": "image", "url": "data:image/png;base64,QUJD"},
+                            ],
+                        }
+                    ]
+                }
+            ]
+        }
         msgs = thread_to_agui_messages(t)
         parts = msgs[0]["content"]
         self.assertIsInstance(parts, list)
@@ -136,6 +186,7 @@ class HistoryMapperTest(unittest.TestCase):
 
     def test_summaries_prefers_name_then_preview(self):
         from nanocodex_client.agui.mapper import thread_summaries
+
         data = [
             {"id": "t1", "name": "My Thread", "preview": "hello", "createdAt": 1},
             {"id": "t2", "preview": "just preview", "createdAt": 2},

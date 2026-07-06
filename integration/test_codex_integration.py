@@ -49,19 +49,18 @@ def sandbox() -> SandboxSpec:
     session id — required for globals to survive across separate run_js calls."""
     return SandboxSpec(
         extra_args=[
-            "--heap-store", "dir",
-            "--heap-dir", "/tmp/h",
-            "--session-id", "itest-thread",
+            "--heap-store",
+            "dir",
+            "--heap-dir",
+            "/tmp/h",
+            "--session-id",
+            "itest-thread",
         ]
     )
 
 
 def thread_id(started: dict) -> str:
-    return (
-        (started.get("thread") or {}).get("id")
-        or started.get("id")
-        or started.get("threadId")
-    )
+    return (started.get("thread") or {}).get("id") or started.get("id") or started.get("threadId")
 
 
 def run_js_call(items: list) -> dict | None:

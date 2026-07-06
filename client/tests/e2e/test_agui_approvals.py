@@ -22,9 +22,12 @@ PROMPT = "RUNJS::console.log(2+2)"
 
 def _body(thread_id):
     return {
-        "threadId": thread_id, "runId": "r1",
+        "threadId": thread_id,
+        "runId": "r1",
         "messages": [{"id": "u1", "role": "user", "content": PROMPT}],
-        "tools": [], "context": [], "state": {},
+        "tools": [],
+        "context": [],
+        "state": {},
         "forwardedProps": {"approvals": True},
     }
 
@@ -32,8 +35,9 @@ def _body(thread_id):
 async def _run(thread_id, approve):
     seen, decisions = [], 0
     async with httpx.AsyncClient(timeout=150) as s:
-        async with s.stream("POST", BRIDGE + "/agui", json=_body(thread_id),
-                            headers={"accept": "text/event-stream"}) as resp:
+        async with s.stream(
+            "POST", BRIDGE + "/agui", json=_body(thread_id), headers={"accept": "text/event-stream"}
+        ) as resp:
             async for line in resp.aiter_lines():
                 line = line.strip()
                 if not line.startswith("data:"):
