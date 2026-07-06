@@ -253,9 +253,14 @@ hit the next server, which proxies them to the in-container bridge
 alone is enough on any host; 8130 is only for direct bridge access.
 `nanocodex-standalone-languages`
 (flake attr `standalone-languages`) is standalone-frontend + the engines with
-the `skills` sandbox preset — real-fs `/work` plus a self-editable skill
-library at `/codex-home/skills` — and Ollama Cloud `glm-5.2` as the default
-model.
+the `skills` sandbox preset and Ollama Cloud `glm-5.2` as the default model.
+Skills are two-tier: the repo-shipped skills (`languages/skills/`) are baked
+**read-only** into the image at `/opt/languages/skills`, while
+`/codex-home/skills` is the agent's own **writable** library — shipped empty
+and declared as its own image volume (mount a named volume there, e.g.
+`-v nanocodex-skills:/codex-home/skills`), so agent-authored skills persist
+across restarts and image updates, updated bundled skills always arrive with
+the image, and neither side ever overwrites the other.
 
 ### Naive passthrough & custom per-thread policies
 
