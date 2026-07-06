@@ -90,27 +90,6 @@ _WASM_MODULES = [
         "await tlaplus(spec, opts?) (inline '---- CONFIG ----' supported).",
     ),
     (
-        "minizinc",
-        "/opt/languages/minizinc.wasm",
-        "1g",
-        "MiniZinc constraint solver. In ONE run_js call, first (0,eval) bootstrap.js then "
-        "await minizinc(model, {data?, args?}?) -> {status, solutions, ...}.",
-    ),
-    (
-        "autolisp",
-        "/opt/languages/acadlisp.wasm",
-        "512m",
-        "AutoLISP interpreter. In ONE run_js call, first (0,eval) bootstrap.js then "
-        "await autolisp(code) -> {result, output, svg}.",
-    ),
-    (
-        "lua",
-        "/opt/languages/lua.wasm",
-        "512m",
-        "Lua 5.4 VM. In ONE run_js call, first (0,eval) bootstrap.js then "
-        "await lua(code, opts?) -> {result, stdout, error}.",
-    ),
-    (
         "craftos",
         "/opt/languages/craftos.wasm",
         "512m",
@@ -140,8 +119,8 @@ LANGUAGES_INSTRUCTIONS = (
     "\n\nThis thread's run_js sandbox additionally has a persistent per-thread "
     "filesystem at /work (await fs.writeFile('/work/x'), fs.readFile, "
     "fs.readdir, ...) that survives across run_js calls, and bundled WASM "
-    "language engines (picat, tlaplus, minizinc, autolisp, lua, craftos, jsx, "
-    "markdown, mermaid), each also a `runjs__wasm__<name>` tool whose "
+    "language engines (picat, tlaplus, craftos), each also a "
+    "`runjs__wasm__<name>` tool whose "
     "description carries its call signature.\n"
     "REFERENCE: a READ-ONLY mount at /opt/languages/codebases/ holds the full "
     "upstream source of four CC/CraftOS projects — craftos2 (the CraftOS-PC "
@@ -149,7 +128,7 @@ LANGUAGES_INSTRUCTIONS = (
     "runs on), reconnected-docs, and re-plethora. fs.readdir/fs.readFile it as "
     "ground truth for exact API/peripheral/Lua-compat behaviour (see the "
     "cc-tweaked skill; codebases/README.md lists pinned revs).\n"
-    "SKILLS: the bundled reference skills (cc-tweaked, craftos-sim, "
+    "SKILLS: the bundled reference skills (picat, cc-tweaked, craftos-sim, "
     "poll-ccraft-lua, l-systems, skill-editor) are READ-ONLY at "
     "/opt/languages/skills/<name>/SKILL.md — fs.readFile the relevant one "
     "before doing related work.\n"
@@ -165,8 +144,8 @@ LANGUAGES_INSTRUCTIONS = (
     "  console.log(JSON.stringify(out));\n"
     "NOTE on craftos (ComputerCraft): a node's returned `output` is ONLY what "
     "its Lua passes to emit(...) — print() is NOT captured — and end multi-line "
-    "programs with done(). Other helpers: await picat(code)/lua(code)/"
-    "minizinc(model)/tlaplus(spec)/autolisp(code); the loaded bootstrap returns "
+    "programs with done(). Other helpers: await picat(code)/"
+    "tlaplus(spec); the loaded bootstrap returns "
     "a __LANG.helpers map of every signature. V8 heap persistence is disabled "
     "on this thread (heap snapshots and WASM modules are mutually exclusive in "
     "mcp-v8) — persist cross-call state in /work."
@@ -177,9 +156,8 @@ LANGUAGES_INSTRUCTIONS = (
 # plus self-editable codex skills.
 SKILLS_INSTRUCTIONS = (
     "\n\nThis thread's run_js sandbox has bundled WASM language engines "
-    "(picat, tlaplus, minizinc, autolisp, lua, craftos, jsx, markdown, "
-    "mermaid), each also listed as a `runjs__wasm__<name>` tool whose "
-    "description carries its call signature.\n"
+    "(picat, tlaplus, craftos), each also listed as a `runjs__wasm__<name>` "
+    "tool whose description carries its call signature.\n"
     "OUTPUT: the tool returns ONLY what you print to stdout with console.log(...) "
     "— the value your code returns (a bare return or trailing expression) is "
     "DISCARDED and yields empty output. There is no require(); fs, fetch and the "
@@ -197,8 +175,8 @@ SKILLS_INSTRUCTIONS = (
     "NOTE on craftos (ComputerCraft): a node's returned `output` is ONLY what "
     "its Lua passes to emit(...) — print() is NOT captured — and end multi-line "
     "programs with done(); see the craftos-sim skill for the full node/turtle/"
-    "GPS API. The other helpers: await picat(code)/lua(code)/minizinc(model)/"
-    "tlaplus(spec)/autolisp(code) (loaded bootstrap returns a __LANG.helpers "
+    "GPS API. The other helpers: await picat(code)/"
+    "tlaplus(spec) (loaded bootstrap returns a __LANG.helpers "
     "map of every signature). Threads also get REAL filesystem "
     "access to two writable areas: /work — a "
     "persistent scratch space shared by all threads (namespace your files) — "
@@ -213,7 +191,8 @@ SKILLS_INSTRUCTIONS = (
     "before doing related work): poll-ccraft-lua (deploy Lua to a "
     "ComputerCraft turtle/computer you can't type into, via a mutable paste "
     "store), cc-tweaked (CC:Tweaked/ComputerCraft Lua API reference), "
-    "craftos-sim (the craftos() node/turtle/GPS API), l-systems, skill-editor. "
+    "craftos-sim (the craftos() node/turtle/GPS API), picat (Picat "
+    "logic/constraint language), l-systems, skill-editor. "
     "Writes there are denied — to customize a bundled skill, copy it into "
     "/codex-home/skills and edit the copy. List both with "
     "fs.readdir('/opt/languages/skills') and "

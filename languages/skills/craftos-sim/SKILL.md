@@ -1,18 +1,52 @@
 ---
 name: craftos-sim
-description: Use when writing or running simulated multi-computer ComputerCraft (CC:Tweaked) tests — rednet/GPS networks, turtle programs, or any scenario needing several computers talking to each other — via the deployed craftos MCP server's `run_simulation` tool. Triggers on testing CC Lua logic without a Minecraft server, GPS trilateration, turtle navigation/fleets in a fake world, or "run this CC program in a sim".
+description: Use when writing or running simulated multi-computer ComputerCraft (CC:Tweaked) tests — rednet/GPS networks, turtle programs, or any scenario needing several computers talking to each other — via the craftos() JS helper inside the run_js sandbox. Triggers on testing CC Lua logic without a Minecraft server, GPS trilateration, turtle navigation/fleets in a fake world, or "run this CC program in a sim".
 ---
 
 # craftos-sim — unified CC simulation runtime
 
-`run_simulation` (MCP tool on the **craftos** connector, served at
-`https://craftos-mcp-production.up.railway.app` — `/mcp` streamable-HTTP and
-`/sse` legacy) boots an arbitrary set of networked CC computers and turtles in an
-embedded CraftOS-PC emulator, runs each node's Lua, and returns what each node
+`craftos(spec)` boots an arbitrary set of networked CC computers and turtles in
+an embedded CraftOS-PC emulator, runs each node's Lua, and returns what each node
 emits. GPS, rednet protocols, and turtle fleets are all just programs you run on
-it — there are no other special tools.
+it.
 
-## Call shape
+## How to run it (IMPORTANT — read this first)
+
+`craftos` is a **JavaScript helper, not a separate tool**. There is NO
+`run_simulation` tool and no external craftos server to call. You run a
+simulation entirely from **`run_js`**:
+
+1. Every `run_js` call is a FRESH V8 isolate — nothing loaded in a previous call
+   survives. So load the languages bootstrap **and** call `craftos()` in the
+   SAME `run_js` call.
+2. The tool returns only what you print to **stdout** — `console.log(...)`. A
+   bare `return`/expression is discarded.
+
+```js
+// one run_js call:
+(0,eval)(await fs.readFile('/opt/languages/bootstrap.js', 'utf8'));
+const out = await craftos({
+  timeout_ms: 15000,
+  nodes: [
+    { label: 'c1', collect: true,
+      world: { start: { x: 0, y: 0, z: 0, facing: 'south', fuel: 1000 } },
+      program: "turtle.forward() emit('now at z='..sim.pos().z) done()" },
+  ],
+});
+console.log(JSON.stringify(out, null, 2));
+```
+
+`craftos(spec)` takes the spec object described below (the JSON blocks in this
+skill ARE that object — pass them as a JS value to `craftos(...)`) and returns
+`{ net: N, nodes: [ {label, id, output, turtle} ] }`, where `output` is
+everything that node passed to `emit()`.
+
+TIP for iterating on a Lua program: keep the program source in a file under
+`/work` (`await fs.writeFile('/work/prog.lua', src)`), then in the sim call read
+it back with `program: await fs.readFile('/work/prog.lua','utf8')` so you edit
+the Lua in one place across runs.
+
+## Spec shape
 
 ```json
 { "timeout_ms": 15000,
@@ -23,9 +57,6 @@ it — there are no other special tools.
       "program": "periphemu.create('top','modem',NET,true) sleep(2) local x,y,z=gps.locate(5) emit(x,y,z) done()" }
   ] }
 ```
-
-Returns `{ "net": N, "nodes": [ {label, id, output, turtle} ] }` where `output`
-is everything that node passed to `emit()`.
 
 ## Each node's environment
 

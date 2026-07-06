@@ -227,48 +227,11 @@
           };
 
           # ── /opt/languages: the WASM language engines + bootstrap.js ────
-          # Pure-nix replication of the former Dockerfile.languages gen
-          # stage (fetch-vendor.sh + build-bootstrap.mjs): vendor the pinned
-          # third-party engines, generate bootstrap.js, and lay out
-          # /opt/languages exactly as the sandbox presets expect.
-          languagesVendor = rec {
-            babel = pkgs.fetchurl {
-              url = "https://registry.npmjs.org/@babel/standalone/-/standalone-7.26.4.tgz";
-              hash = "sha256-Fgtct5rVYR9ko0lhONQ6iHx56uvnIiU3jBrJS9DTrDY=";
-            };
-            react = pkgs.fetchurl {
-              url = "https://registry.npmjs.org/react/-/react-18.3.1.tgz";
-              hash = "sha256-jZvtAaZy5+rzh5QteBrUfGpDCJowoDBgYPn9WseHA0c=";
-            };
-            react-dom = pkgs.fetchurl {
-              url = "https://registry.npmjs.org/react-dom/-/react-dom-18.3.1.tgz";
-              hash = "sha256-Ax1EJ6mfLz9srBi7vzCFlKZ+T0fRD0iW/exEZQWwQOA=";
-            };
-            marked = pkgs.fetchurl {
-              url = "https://registry.npmjs.org/marked/-/marked-11.1.1.tgz";
-              hash = "sha256-wp3d737tQNI3vcbniGmFyxlrI09sk2wur11s0rwVObU=";
-            };
-            mermaid = pkgs.fetchurl {
-              url = "https://registry.npmjs.org/mermaid/-/mermaid-9.4.3.tgz";
-              hash = "sha256-S2DQ3/g8zvtK5IKwDzDWQTibhhpnzfUcy4t+7RnPiw4=";
-            };
-            minizinc = pkgs.fetchurl {
-              url = "https://registry.npmjs.org/minizinc/-/minizinc-4.4.6.tgz";
-              hash = "sha256-B699O16733wS0Qlec7DTkemytVf5cKouUtlW1flnSUc=";
-            };
-            wasmoon = pkgs.fetchurl {
-              url = "https://registry.npmjs.org/wasmoon/-/wasmoon-1.16.0.tgz";
-              hash = "sha256-egfLbTmvEJEfq9UHQIM0d7GLR7bwMUjxUhjt9HTIr1Y=";
-            };
-            acadlisp-js = pkgs.fetchurl {
-              url = "https://raw.githubusercontent.com/holg/acadlisp/aa555bbe87f950ceceb8cb587c0735bc69aa2f23/dist/acadlisp-86aa022a7657981b.js";
-              hash = "sha256-b9mf9w9hd/+oMipRaXABTCVA7Dg9R+pJEy50SohiOok=";
-            };
-            acadlisp-wasm = pkgs.fetchurl {
-              url = "https://raw.githubusercontent.com/holg/acadlisp/aa555bbe87f950ceceb8cb587c0735bc69aa2f23/dist/acadlisp-86aa022a7657981b_bg.wasm";
-              hash = "sha256-MiAhWV3GJtDhyCtOJRE7+hfLgMWQfJXZAN8gxUKmM/g=";
-            };
-          };
+          # Pure-nix replication of the former Dockerfile.languages gen stage
+          # (build-bootstrap.mjs): this distro ships only the three in-repo
+          # engines (picat, tla+, craftos) from ./languages/engines — no
+          # third-party fetchurl vendoring — then generates bootstrap.js and
+          # lays out /opt/languages exactly as the sandbox presets expect.
 
           # ── /opt/languages/codebases: read-only reference source trees ──
           # Full upstream source of four ComputerCraft / CraftOS projects,
@@ -336,36 +299,16 @@
 
           languagesOpt = pkgs.runCommand "nanocodex-languages-opt"
             { nativeBuildInputs = [ pkgsTools.nodejs_22 ]; } ''
-            mkdir -p build/vendor build/package
+            mkdir -p build/vendor
             cp -r ${./languages/src} build/src
             cp ${./languages/build-bootstrap.mjs} build/build-bootstrap.mjs
-            # In-repo engines land in vendor/ (fetch-vendor.sh's final copy).
+            # Every engine this distro ships is in-repo (picat, tla+, craftos).
             cp ${./languages/engines}/* build/vendor/
 
             cd build
-            tar -xzf ${languagesVendor.babel} package/babel.min.js
-            mv package/babel.min.js vendor/babel.min.js
-            tar -xzf ${languagesVendor.react} package/umd/react.production.min.js
-            mv package/umd/react.production.min.js vendor/react.min.js
-            tar -xzf ${languagesVendor.react-dom} package/umd/react-dom-server-legacy.browser.production.min.js
-            mv package/umd/react-dom-server-legacy.browser.production.min.js vendor/react-dom-server.min.js
-            tar -xzf ${languagesVendor.marked} package/marked.min.js
-            mv package/marked.min.js vendor/marked.min.js
-            tar -xzf ${languagesVendor.mermaid} package/dist/mermaid.min.js
-            mv package/dist/mermaid.min.js vendor/mermaid.min.js
-            tar -xzf ${languagesVendor.minizinc} package/dist/minizinc-worker.js package/dist/minizinc.data package/dist/minizinc.wasm
-            mv package/dist/minizinc-worker.js vendor/minizinc-worker.js
-            mv package/dist/minizinc.data vendor/minizinc.data
-            mv package/dist/minizinc.wasm vendor/minizinc.wasm
-            tar -xzf ${languagesVendor.wasmoon} package/dist/index.js package/dist/glue.wasm
-            mv package/dist/index.js vendor/wasmoon.js
-            mv package/dist/glue.wasm vendor/lua.wasm
-            cp ${languagesVendor.acadlisp-js} vendor/acadlisp.js
-            cp ${languagesVendor.acadlisp-wasm} vendor/acadlisp.wasm
-
             mkdir -p $out/opt/languages
             node build-bootstrap.mjs $out/opt/languages/bootstrap.js
-            for f in picat.wasm tla_checker.wasm minizinc.wasm acadlisp.wasm lua.wasm craftos.wasm; do
+            for f in picat.wasm tla_checker.wasm craftos.wasm; do
               cp vendor/$f $out/opt/languages/$f
             done
             cp ${./languages/filesystem.rego} $out/opt/languages/filesystem.rego
@@ -755,9 +698,6 @@
                 "--heap-memory-max" "256"
                 "--wasm-module" "picat=/opt/languages/picat.wasm:512m"
                 "--wasm-module" "tla=/opt/languages/tla_checker.wasm:512m"
-                "--wasm-module" "minizinc=/opt/languages/minizinc.wasm:1g"
-                "--wasm-module" "autolisp=/opt/languages/acadlisp.wasm:512m"
-                "--wasm-module" "lua=/opt/languages/lua.wasm:512m"
                 "--wasm-module" "craftos=/opt/languages/craftos.wasm:512m"
               ];
               Env = [
