@@ -1,8 +1,11 @@
 package mcp.filesystem
 
-# Read-only access to the language assets (bootstrap.js), plus a read+write
-# scratch area under /work. Everything else is denied. The bootstrap is loaded
-# without a sidecar HTTP server — `await fs.readFile('/opt/languages/bootstrap.js')`.
+# Read-only access to the language assets (bootstrap.js) and the bundled
+# reference codebases under /opt/languages/codebases (see flake.nix), plus a
+# read+write scratch area under /work. Everything else is denied. The bootstrap
+# is loaded without a sidecar HTTP server — `await
+# fs.readFile('/opt/languages/bootstrap.js')`. The /opt/languages/ read rules
+# below already cover the codebases subtree, so no extra rule is needed.
 default allow = false
 
 # Read + write scratch space under /work (all fs operations).

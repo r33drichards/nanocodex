@@ -267,6 +267,70 @@
             };
           };
 
+          # ── /opt/languages/codebases: read-only reference source trees ──
+          # Full upstream source of four ComputerCraft / CraftOS projects,
+          # baked read-only into the languages image so the agent can grep and
+          # read the real implementations behind the CC:Tweaked API (the mount
+          # is already readable via filesystem.rego — no policy change needed).
+          #
+          # Pinned by commit; submodules are NOT fetched (their gitlink paths
+          # remain empty dirs — the four listed repos are the reference, not
+          # their sub-projects). `desc` also feeds codebases/README.md, so the
+          # metadata lives here once. To bump a rev: change `rev`, set
+          # `hash = lib.fakeHash`, rebuild, and paste the reported hash back.
+          languagesCodebasesMeta = [
+            {
+              dir = "reconnected-docs";
+              url = "https://github.com/ReconnectedCC/docs.git";
+              rev = "95e195376448f043cc2a970eed42515cf038d845";
+              hash = "sha256-VA5+NXZw6z4G7Segwti2gHNbDU6FuEbaxBa2+7ouhLs=";
+              desc = "ReconnectedCC/docs — docs for the ReconnectedCC server (CC:Tweaked APIs, guides, ReconnectedChat, custom peripherals).";
+            }
+            {
+              dir = "re-plethora";
+              url = "https://github.com/ReconnectedCC/Re-Plethora.git";
+              rev = "88e02f1dafdcc379e3f46768ea1ea89bf647510c";
+              hash = "sha256-D+64pU0S9PL7EaD06rwk/G0PSIn+6wn8jPNvmlfu4v4=";
+              desc = "ReconnectedCC/Re-Plethora — the Plethora peripherals/neural-interface mod (Java); source for the modules & methods it exposes to CC computers.";
+            }
+            {
+              dir = "craftos2";
+              url = "https://github.com/MCJack123/craftos2.git";
+              rev = "2844cba6184e7e2590910d6c2c33697b9b5ff9fd";
+              hash = "sha256-bV/KfVAXthHQnRs+MP5odIX6hYJlMf76XazhtDmmw2Q=";
+              desc = "MCJack123/craftos2 — CraftOS-PC, the CC:Tweaked emulator (C++); reference for API/peripheral behaviour (this is what the `craftos` engine is built from).";
+            }
+            {
+              dir = "cobalt";
+              url = "https://github.com/cc-tweaked/Cobalt.git";
+              rev = "5df90f08eefb0faf10ad4cadb47b9e59d661bf88";
+              hash = "sha256-sjxISeWDGO2c+58GqfjNgb703rNl2Zo2GmWDh04huHc=";
+              desc = "cc-tweaked/Cobalt — the Lua VM (Java) CC:Tweaked runs on; ground truth for Lua-compat quirks (5.1 + selected 5.2/5.3).";
+            }
+          ];
+          languagesCodebases = map (c: c // {
+            src = pkgs.fetchgit {
+              inherit (c) url rev hash;
+              fetchSubmodules = false;
+            };
+          }) languagesCodebasesMeta;
+          languagesCodebasesCopy = lib.concatMapStrings (c: ''
+            cp -r ${c.src} $out/opt/languages/codebases/${c.dir}
+          '') languagesCodebases;
+          languagesCodebasesReadme = pkgs.writeText "codebases-README.md" (''
+            # Reference codebases (read-only)
+
+            Full upstream source of the ComputerCraft / CraftOS projects below,
+            baked into the languages image so the agent can read and grep the
+            real implementations behind the CC:Tweaked API. This is a read-only
+            mount — do not try to edit it (write scratch work under /work).
+            Submodules are not included (their paths are empty dirs).
+
+          '' + lib.concatMapStrings (c: ''
+            - `${c.dir}/` — ${c.desc}
+              (${c.url} @ ${c.rev})
+          '') languagesCodebasesMeta);
+
           languagesOpt = pkgs.runCommand "nanocodex-languages-opt"
             { nativeBuildInputs = [ pkgsTools.nodejs_22 ]; } ''
             mkdir -p build/vendor build/package
@@ -305,6 +369,14 @@
             cp ${./languages/policies.json} $out/opt/languages/policies.json
             cp ${./languages/filesystem-skills.rego} $out/opt/languages/filesystem-skills.rego
             cp ${./languages/policies-skills.json} $out/opt/languages/policies-skills.json
+
+            # Read-only reference source trees under /opt/languages/codebases
+            # (see languagesCodebases). chmod so the copied store paths (0444)
+            # are writable during layering; the runtime mount stays read-only.
+            mkdir -p $out/opt/languages/codebases
+            ${languagesCodebasesCopy}
+            cp ${languagesCodebasesReadme} $out/opt/languages/codebases/README.md
+            chmod -R u+w $out/opt/languages/codebases
 
             # Pre-packaged codex skills — languages images only (merged into
             # /codex-home next to the rootfs-provided config.toml).
