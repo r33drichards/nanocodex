@@ -45,6 +45,11 @@ services:
     volumes:
       - codex-languages-data:/codex-home/sqlite
       - codex-languages-sessions:/codex-home/sessions
+      # Agent-authored skills (`skills` preset): /codex-home/skills is the
+      # writable library, shipped empty in the image. The repo-shipped skills
+      # are baked read-only at /opt/languages/skills, so this volume never
+      # shadows them and image updates never clobber agent-authored skills.
+      - codex-languages-skills:/codex-home/skills
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:4500/healthz"]
       interval: 10s
@@ -61,3 +66,4 @@ volumes:
   codex-sessions:
   codex-languages-data:
   codex-languages-sessions:
+  codex-languages-skills:

@@ -107,7 +107,10 @@ class SandboxPresetTest(_EnvMixin):
         os.environ["NANOCODEX_SANDBOX"] = "skills"
         text = instructions_for("base")
         self.assertTrue(text.startswith("base"))
+        # Two-tier layout: writable personal library vs read-only bundled set.
         self.assertIn("/codex-home/skills", text)
+        self.assertIn("/opt/languages/skills", text)
+        self.assertIn("READ-ONLY", text)
         self.assertIn("SKILL.md", text)
 
     def test_remote_preset_streamable_http_raw(self):
@@ -161,6 +164,8 @@ class SandboxPresetTest(_EnvMixin):
         self.assertTrue(with_langs.startswith(base))
         self.assertIn(LANGUAGES_INSTRUCTIONS, with_langs)
         self.assertIn("/opt/languages/bootstrap.js", with_langs)
+        # Bundled skills are readable (read-only) in the languages preset too.
+        self.assertIn("/opt/languages/skills", with_langs)
 
 
 if __name__ == "__main__":
