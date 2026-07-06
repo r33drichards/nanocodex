@@ -8,6 +8,7 @@ import {
   ThreadPrimitive,
   useAssistantRuntime,
   useComposerRuntime,
+  useThreadRuntime,
 } from "@assistant-ui/react";
 import {
   useEffect,
@@ -16,6 +17,7 @@ import {
   useState,
   type ClipboardEvent,
   type ComponentType,
+  type KeyboardEvent,
 } from "react";
 
 // ── run_js tool card ─────────────────────────────────────────────────────────
@@ -277,10 +279,114 @@ function ComposerAttachments() {
   );
 }
 
-// ── composer (text + image attach + ⌘V paste) ────────────────────────────────
-function Composer() {
+// ── composer (text + image attach + ⌘V paste + queue/steer) ──────────────────
+// While a turn is streaming, the composer stays live with two verbs:
+//   ⏎    queue — hold the text locally and send it as the NEXT turn (one
+//        queued message per turn, in order) once the current run finishes;
+//   ⌘/Ctrl+⏎ steer — inject the text into the IN-FLIGHT turn via the bridge's
+//        /steer side-channel (codex turn/steer); the turn keeps running.
+// When idle, both are just a normal send. (assistant-ui's native queue can't
+// be used: useAgUiRuntime doesn't expose the external store's queue adapter.)
+let nextChipId = 0;
+type Chip = { id: number; text: string };
+
+function Composer({ steer }: { steer: (text: string) => Promise<boolean> }) {
   const composer = useComposerRuntime();
+  const thread = useThreadRuntime();
   const fileRef = useRef<HTMLInputElement>(null);
+  const [running, setRunning] = useState(false);
+  const [hasText, setHasText] = useState(false);
+  const [canSend, setCanSend] = useState(false);
+  const [queued, setQueued] = useState<Chip[]>([]);
+  const [steered, setSteered] = useState<Chip[]>([]);
+  const queueRef = useRef<Chip[]>(queued);
+  queueRef.current = queued;
+
+  // Track run state + thread switches off the real runtime state. On
+  // run-finish, flush the queue head as the next turn and drop the "steered"
+  // indicators (the steered text lives in codex history from here on). A
+  // thread switch discards both — they belong to the thread that queued them.
+  useEffect(() => {
+    let prevRunning = thread.getState().isRunning;
+    let prevThreadId = thread.getState().threadId;
+    setRunning(prevRunning);
+    return thread.subscribe(() => {
+      const { isRunning, threadId } = thread.getState();
+      if (threadId !== prevThreadId) {
+        prevThreadId = threadId;
+        queueRef.current = []; // sync the ref eagerly — the re-render may lag
+        setQueued([]);
+        setSteered([]);
+      }
+      if (isRunning === prevRunning) return;
+      prevRunning = isRunning;
+      setRunning(isRunning);
+      if (!isRunning) {
+        setSteered([]);
+        const [head, ...rest] = queueRef.current;
+        if (head) {
+          queueRef.current = rest;
+          setQueued(rest);
+          thread.append(head.text);
+        }
+      }
+    });
+  }, [thread]);
+
+  // Live composer text → button enable/disable.
+  useEffect(() => {
+    const sync = () => {
+      const s = composer.getState();
+      setHasText(!!s.text.trim());
+      setCanSend(s.canSend);
+    };
+    sync();
+    return composer.subscribe(sync);
+  }, [composer]);
+
+  // Queue the composer text for the next turn (or send it right away when
+  // nothing is running and nothing is already queued ahead of it).
+  const enqueue = (text: string) => {
+    const t = text.trim();
+    if (!t) return;
+    composer.setText("");
+    if (thread.getState().isRunning || queueRef.current.length) {
+      setQueued((q) => [...q, { id: ++nextChipId, text: t }]);
+    } else {
+      thread.append(t);
+    }
+  };
+
+  // Steer the in-flight turn. On failure (turn just ended, bridge refused)
+  // don't lose the text — fall back to queue/send.
+  const steerNow = async (text: string) => {
+    const t = text.trim();
+    if (!t) return;
+    composer.setText("");
+    const chip = { id: ++nextChipId, text: t };
+    setSteered((s) => [...s, chip]);
+    const ok = await steer(t);
+    if (!ok) {
+      setSteered((s) => s.filter((c) => c.id !== chip.id));
+      enqueue(t);
+    }
+  };
+
+  const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key !== "Enter" || e.shiftKey || e.nativeEvent.isComposing) return;
+    const isRunning = thread.getState().isRunning;
+    if (e.metaKey || e.ctrlKey) {
+      e.preventDefault();
+      if (isRunning) void steerNow(composer.getState().text);
+      else if (composer.getState().canSend) composer.send();
+      return;
+    }
+    if (isRunning) {
+      e.preventDefault();
+      enqueue(composer.getState().text);
+    }
+    // idle plain ⏎ falls through to the primitive's default submit (send).
+  };
 
   const addImages = (files: FileList | File[] | null) => {
     for (const f of Array.from(files ?? [])) {
@@ -301,12 +407,38 @@ function Composer() {
   return (
     <ComposerPrimitive.Root className="composer">
       <ComposerAttachments />
+      {(steered.length > 0 || queued.length > 0) && (
+        <div className="composer-queue" data-testid="composer-queue">
+          {steered.map((c) => (
+            <div key={c.id} className="queue-chip queue-chip-steered" data-testid="steered-chip">
+              <span className="queue-tag">steered</span>
+              <span className="queue-text">{c.text}</span>
+            </div>
+          ))}
+          {queued.map((c) => (
+            <div key={c.id} className="queue-chip" data-testid="queued-chip">
+              <span className="queue-tag">queued</span>
+              <span className="queue-text">{c.text}</span>
+              <button
+                type="button"
+                className="queue-remove"
+                data-testid="queued-remove"
+                title="Remove from queue"
+                onClick={() => setQueued((q) => q.filter((x) => x.id !== c.id))}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="composer-row">
         <ComposerPrimitive.Input
           className="composer-input"
           data-testid="composer-input"
-          placeholder="Message nanocodex — e.g. RUNJS::console.log(2+2). Paste (⌘V) or attach an image."
+          placeholder="Message nanocodex — ⏎ send (queues while running), ⌘⏎ steer the running turn. Paste (⌘V) or attach an image."
           onPaste={onPaste}
+          onKeyDown={onKeyDown}
         />
         <button
           type="button"
@@ -328,9 +460,40 @@ function Composer() {
             e.target.value = "";
           }}
         />
-        <ComposerPrimitive.Send className="composer-send" data-testid="composer-send">
-          Send
-        </ComposerPrimitive.Send>
+        {running ? (
+          <>
+            <button
+              type="button"
+              className="composer-steer"
+              data-testid="steer-btn"
+              title="Steer the in-flight turn (⌘⏎)"
+              disabled={!hasText}
+              onClick={() => void steerNow(composer.getState().text)}
+            >
+              Steer
+            </button>
+            <button
+              type="button"
+              className="composer-send"
+              data-testid="composer-send"
+              title="Queue for the next turn (⏎)"
+              disabled={!hasText}
+              onClick={() => enqueue(composer.getState().text)}
+            >
+              Queue
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            className="composer-send"
+            data-testid="composer-send"
+            disabled={!canSend}
+            onClick={() => composer.send()}
+          >
+            Send
+          </button>
+        )}
       </div>
     </ComposerPrimitive.Root>
   );
@@ -350,7 +513,13 @@ function useRefreshOnIdle(onIdle: () => void) {
   }, [runtime, onIdle]);
 }
 
-export function NanocodexThread({ onRunComplete }: { onRunComplete: () => void }) {
+export function NanocodexThread({
+  onRunComplete,
+  steer,
+}: {
+  onRunComplete: () => void;
+  steer: (text: string) => Promise<boolean>;
+}) {
   useRefreshOnIdle(onRunComplete);
   return (
     <ThreadPrimitive.Root className="thread">
@@ -364,7 +533,7 @@ export function NanocodexThread({ onRunComplete }: { onRunComplete: () => void }
           components={{ UserMessage, AssistantMessage }}
         />
       </ThreadPrimitive.Viewport>
-      <Composer />
+      <Composer steer={steer} />
     </ThreadPrimitive.Root>
   );
 }
