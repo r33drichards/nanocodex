@@ -9,6 +9,7 @@ model provider; the router only supplies the per-thread mcp-v8 sandbox.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import uuid
 
@@ -21,7 +22,11 @@ from ..core import Nanocodex, RpcError
 from .agents import (
     AGENTS_INSTRUCTIONS,
     agents_server_decl,
+)
+from .agents import (
     format_notes as format_agent_notes,
+)
+from .agents import (
     registry as agents_registry,
 )
 from .mapper import (
@@ -212,8 +217,9 @@ def _codex_id_for(agui_thread_id: str) -> str | None:
     return b.codex_thread_id if b else None
 
 
-async def _create_bound_thread(nc: Nanocodex, agui_thread_id: str, approvals: bool,
-                               extra_instructions: str = "") -> str:
+async def _create_bound_thread(
+    nc: Nanocodex, agui_thread_id: str, approvals: bool, extra_instructions: str = ""
+) -> str:
     """Create a codex thread with this deployment's standard per-thread config
     and bind it under `agui_thread_id`. The ONE place that config is composed —
     the agents module reuses it for sub-agent threads, so main threads and
@@ -233,7 +239,8 @@ async def _create_bound_thread(nc: Nanocodex, agui_thread_id: str, approvals: bo
     # The sandbox preset (and instruction addendum) is deploy-time config —
     # NANOCODEX_SANDBOX matches the runtime image this instance runs.
     resp = await nc.create_thread(
-        sandbox=sandbox_for(sid, approvals), cwd="/tmp",
+        sandbox=sandbox_for(sid, approvals),
+        cwd="/tmp",
         developer_instructions=instructions + extra_instructions,
         extra_mcp_servers=extra_mcp_servers,
     )
@@ -467,8 +474,8 @@ def _auth_status() -> dict:
     mode = data.get("auth_mode")
     if not mode:
         # Legacy: a bare OPENAI_API_KEY / tokens block implies the mode.
-        mode = "chatgpt" if data.get("tokens") else (
-            "apikey" if data.get("OPENAI_API_KEY") else None
+        mode = (
+            "chatgpt" if data.get("tokens") else ("apikey" if data.get("OPENAI_API_KEY") else None)
         )
     return {
         "loggedIn": mode in ("chatgpt", "chatgptDeviceCode", "apiKey", "apikey"),

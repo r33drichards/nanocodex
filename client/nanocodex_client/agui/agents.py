@@ -80,12 +80,12 @@ def agents_server_decl(agent_key: str, approvals: bool = False) -> dict | None:
 
 @dataclass
 class AgentInfo:
-    agent_id: str            # the sub-thread's AG-UI id (bridge-generated)
-    parent_key: str          # spawner's agent key (its AG-UI thread id)
-    parent_codex_id: str     # spawner's codex thread id (resolved at spawn)
+    agent_id: str  # the sub-thread's AG-UI id (bridge-generated)
+    parent_key: str  # spawner's agent key (its AG-UI thread id)
+    parent_codex_id: str  # spawner's codex thread id (resolved at spawn)
     name: str
     task: str
-    depth: int               # 1 = spawned by a main thread
+    depth: int  # 1 = spawned by a main thread
     codex_thread_id: str = ""
     status: str = "spawning"  # spawning | running | idle | failed
     result: str | None = None  # final message of the last completed turn
@@ -268,6 +268,7 @@ def _router():
     # Lazy import: router.py imports this module at load time; we only need
     # its live state (store/_active/instructions) at call time.
     from . import router as R
+
     return R
 
 
@@ -287,8 +288,8 @@ async def _create_agent_thread(nc, info: AgentInfo) -> str:
     plus a subagent preamble. Approvals are never enabled — sub-agents run
     headless."""
     return await _router()._create_bound_thread(
-        nc, info.agent_id, approvals=False,
-        extra_instructions=subagent_preamble(info))
+        nc, info.agent_id, approvals=False, extra_instructions=subagent_preamble(info)
+    )
 
 
 async def _deliver(target_codex_id: str, note: dict) -> str:
@@ -323,16 +324,28 @@ async def _run_agent_turn(nc, info: AgentInfo, text: str, kind: str) -> None:
     try:
         res = await nc.run_turn(codex_tid, text, timeout=TURN_TIMEOUT)
         final = "\n\n".join(m for m in res["agent_messages"] if m) or "(no reply)"
-        note = {"from": info.agent_id, "name": info.name, "kind": kind,
-                "text": final, "error": False, "ts": time.time()}
+        note = {
+            "from": info.agent_id,
+            "name": info.name,
+            "kind": kind,
+            "text": final,
+            "error": False,
+            "ts": time.time(),
+        }
         # Status flip + waiter snapshot in one synchronous block: a waiter
         # that wakes during the awaits below already consumed this outcome,
         # and must not ALSO get it announced (duplicate report).
         info.status, info.result, info.error = "idle", final, None
         announce = not registry.has_waiters(info.agent_id)
     except Exception as err:
-        note = {"from": info.agent_id, "name": info.name, "kind": kind,
-                "text": f"{type(err).__name__}: {err}", "error": True, "ts": time.time()}
+        note = {
+            "from": info.agent_id,
+            "name": info.name,
+            "kind": kind,
+            "text": f"{type(err).__name__}: {err}",
+            "error": True,
+            "ts": time.time(),
+        }
         info.status, info.error = "failed", note["text"]
         announce = not registry.has_waiters(info.agent_id)
     finally:
@@ -372,8 +385,14 @@ AGENT_TOOLS: list[dict] = [
             "properties": {
                 "task": {"type": "string", "description": "Complete, standalone task description"},
                 "name": {"type": "string", "description": "Short display name (optional)"},
-                "wait": {"type": "boolean", "description": "Block until the subagent finishes (default false)"},
-                "timeout_sec": {"type": "number", "description": f"Max seconds to wait when wait:true (default {int(DEFAULT_WAIT_SECS)})"},
+                "wait": {
+                    "type": "boolean",
+                    "description": "Block until the subagent finishes (default false)",
+                },
+                "timeout_sec": {
+                    "type": "number",
+                    "description": f"Max seconds to wait when wait:true (default {int(DEFAULT_WAIT_SECS)})",
+                },
             },
             "required": ["task"],
         },
@@ -391,8 +410,14 @@ AGENT_TOOLS: list[dict] = [
             "properties": {
                 "agent_id": {"type": "string", "description": "Target subagent id, or 'parent'"},
                 "message": {"type": "string"},
-                "wait": {"type": "boolean", "description": "Wait for the reply (default true; ignored for 'parent')"},
-                "timeout_sec": {"type": "number", "description": f"Max seconds to wait (default {int(DEFAULT_WAIT_SECS)})"},
+                "wait": {
+                    "type": "boolean",
+                    "description": "Wait for the reply (default true; ignored for 'parent')",
+                },
+                "timeout_sec": {
+                    "type": "number",
+                    "description": f"Max seconds to wait (default {int(DEFAULT_WAIT_SECS)})",
+                },
             },
             "required": ["agent_id", "message"],
         },
@@ -413,7 +438,10 @@ AGENT_TOOLS: list[dict] = [
             "type": "object",
             "properties": {
                 "agent_id": {"type": "string"},
-                "timeout_sec": {"type": "number", "description": f"Default {int(DEFAULT_WAIT_SECS)}"},
+                "timeout_sec": {
+                    "type": "number",
+                    "description": f"Default {int(DEFAULT_WAIT_SECS)}",
+                },
             },
             "required": ["agent_id"],
         },
@@ -473,12 +501,19 @@ async def _tool_spawn(caller_key: str, args: dict) -> dict:
             raise ToolError(
                 "cannot resolve the calling thread (bridge restarted?) — "
                 "reports could not be delivered back; set AGUI_BINDINGS_PATH "
-                "to persist thread bindings, or start a new thread")
+                "to persist thread bindings, or start a new thread"
+            )
 
     agent_id = f"agent-{uuid.uuid4().hex[:12]}"
     name = (args.get("name") or "").strip() or f"subagent-{len(children) + 1}"
-    info = AgentInfo(agent_id=agent_id, parent_key=caller_key,
-                     parent_codex_id=parent_codex, name=name, task=task, depth=depth)
+    info = AgentInfo(
+        agent_id=agent_id,
+        parent_key=caller_key,
+        parent_codex_id=parent_codex,
+        name=name,
+        task=task,
+        depth=depth,
+    )
     registry.add(info)
     try:
         info.codex_thread_id = await _create_agent_thread(nc, info)
@@ -493,7 +528,9 @@ async def _tool_spawn(caller_key: str, args: dict) -> dict:
     if args.get("wait"):
         return await _wait_and_report(agent_id, args)
     return {
-        "agentId": agent_id, "name": name, "threadId": info.codex_thread_id,
+        "agentId": agent_id,
+        "name": name,
+        "threadId": info.codex_thread_id,
         "status": info.status,
         "note": "working in the background — its report will be announced to you",
     }
@@ -511,8 +548,14 @@ async def _tool_send(caller_key: str, args: dict) -> dict:
         info = registry.get(caller_key)
         if info is None:
             raise ToolError("this thread was not spawned by an agent — it has no parent")
-        note = {"from": info.agent_id, "name": info.name, "kind": "message",
-                "text": message, "error": False, "ts": time.time()}
+        note = {
+            "from": info.agent_id,
+            "name": info.name,
+            "kind": "message",
+            "text": message,
+            "error": False,
+            "ts": time.time(),
+        }
         outcome = await _deliver(info.parent_codex_id, note)
         return {"delivered": outcome, "to": "parent"}
 
@@ -539,9 +582,17 @@ async def _tool_send(caller_key: str, args: dict) -> dict:
             except Exception:
                 # The turn ended (or never started) under us — queue the
                 # message; the agent's next turn drains it.
-                registry.inbox_push(info.codex_thread_id, {
-                    "from": "parent", "name": "parent", "kind": "message",
-                    "text": message, "error": False, "ts": time.time()})
+                registry.inbox_push(
+                    info.codex_thread_id,
+                    {
+                        "from": "parent",
+                        "name": "parent",
+                        "kind": "message",
+                        "text": message,
+                        "error": False,
+                        "ts": time.time(),
+                    },
+                )
                 delivered = "queued"
             finally:
                 await nc.close()
@@ -602,10 +653,13 @@ def _rpc_error(req_id, code: int, message: str) -> dict:
 
 
 def _tool_result(req_id, payload: dict, is_error: bool = False) -> dict:
-    return _rpc_result(req_id, {
-        "content": [{"type": "text", "text": json.dumps(payload)}],
-        "isError": is_error,
-    })
+    return _rpc_result(
+        req_id,
+        {
+            "content": [{"type": "text", "text": json.dumps(payload)}],
+            "isError": is_error,
+        },
+    )
 
 
 async def _handle_rpc(msg: dict, caller_key: str) -> dict | None:
@@ -616,11 +670,14 @@ async def _handle_rpc(msg: dict, caller_key: str) -> dict | None:
     if req_id is None:
         return None  # notification (e.g. notifications/initialized)
     if method == "initialize":
-        return _rpc_result(req_id, {
-            "protocolVersion": params.get("protocolVersion") or "2025-03-26",
-            "capabilities": {"tools": {}},
-            "serverInfo": {"name": "agents", "version": "0.1.0"},
-        })
+        return _rpc_result(
+            req_id,
+            {
+                "protocolVersion": params.get("protocolVersion") or "2025-03-26",
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "agents", "version": "0.1.0"},
+            },
+        )
     if method == "ping":
         return _rpc_result(req_id, {})
     if method == "tools/list":
@@ -635,8 +692,7 @@ async def _handle_rpc(msg: dict, caller_key: str) -> dict | None:
         except ToolError as err:
             return _tool_result(req_id, {"error": str(err)}, is_error=True)
         except Exception as err:  # never crash the endpoint on a tool bug
-            return _tool_result(
-                req_id, {"error": f"{type(err).__name__}: {err}"}, is_error=True)
+            return _tool_result(req_id, {"error": f"{type(err).__name__}: {err}"}, is_error=True)
     return _rpc_error(req_id, -32601, f"method not found: {method}")
 
 
@@ -665,8 +721,15 @@ async def agents_mcp(request: Request):
 @agents_router.get("/agui/agents")
 async def list_registry():
     """Debug/observability: the full sub-agent registry."""
-    return {"agents": [
-        {**a.summary(), "parentThreadId": a.parent_codex_id, "depth": a.depth,
-         "createdAt": a.created_at, "updatedAt": a.updated_at}
-        for a in registry._agents.values()
-    ]}
+    return {
+        "agents": [
+            {
+                **a.summary(),
+                "parentThreadId": a.parent_codex_id,
+                "depth": a.depth,
+                "createdAt": a.created_at,
+                "updatedAt": a.updated_at,
+            }
+            for a in registry._agents.values()
+        ]
+    }

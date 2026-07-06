@@ -45,9 +45,7 @@ function mcpResultPayload(result: unknown): any {
     }
   }
   if (obj && Array.isArray(obj.content)) {
-    const text = obj.content
-      .map((c: any) => (typeof c?.text === "string" ? c.text : ""))
-      .join("");
+    const text = obj.content.map((c: any) => (typeof c?.text === "string" ? c.text : "")).join("");
     if (text !== "") {
       try {
         return JSON.parse(text);
@@ -200,7 +198,10 @@ function agentPayload(result: unknown): any {
 }
 
 function AgentToolCard({ toolName, args, argsText, result, status }: any) {
-  const bare = String(toolName ?? "").split(".").pop() ?? "";
+  const bare =
+    String(toolName ?? "")
+      .split(".")
+      .pop() ?? "";
   const label = AGENT_TOOL_LABELS[bare] ?? bare;
   const done = status?.type === "complete";
   const payload = done ? agentPayload(result) : null;
@@ -214,7 +215,7 @@ function AgentToolCard({ toolName, args, argsText, result, status }: any) {
         <span className="agent-card-label">{label}</span>
         {target ? <span className="agent-card-target">{target}</span> : null}
         <span className="agent-card-status">
-          {payload?.error ? "error" : payload?.status ?? (done ? "" : "…")}
+          {payload?.error ? "error" : (payload?.status ?? (done ? "" : "…"))}
         </span>
       </div>
       {request ? <div className="agent-card-req">{request}</div> : null}

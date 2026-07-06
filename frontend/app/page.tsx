@@ -15,12 +15,7 @@ import {
 } from "@assistant-ui/react-ag-ui";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import {
-  NanocodexThread,
-  ThreadListSidebar,
-  ThreadMetaContext,
-  type ThreadMeta,
-} from "./thread";
+import { NanocodexThread, ThreadListSidebar, ThreadMetaContext, type ThreadMeta } from "./thread";
 
 // The AG-UI agent (HttpAgent) runs client-side and talks to the bridge.
 // NEXT_PUBLIC_BRIDGE_URL is inlined at build: a full origin makes the browser

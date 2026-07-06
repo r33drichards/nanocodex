@@ -12,10 +12,9 @@ import json
 import os
 import unittest
 
-from fastapi.testclient import TestClient
-
 import nanocodex_client.agui.agents as A
 import nanocodex_client.agui.router as R
+from fastapi.testclient import TestClient
 from nanocodex_client.core import RpcError
 
 AGENTS_URL = "http://127.0.0.1:8130/agents/mcp"
@@ -43,23 +42,30 @@ class FakeNC:
             raise RpcError("thread/resume", {"code": -1, "message": "not found"})
         return {"thread": {"id": thread_id}}
 
-    async def create_thread(self, sandbox=None, cwd="/tmp", developer_instructions=None,
-                            extra_mcp_servers=None):
+    async def create_thread(
+        self, sandbox=None, cwd="/tmp", developer_instructions=None, extra_mcp_servers=None
+    ):
         if FakeNC.fail_create:
             raise RuntimeError("thread/start refused")
         FakeNC._n = getattr(FakeNC, "_n", 0) + 1
         tid = f"codex-sub-{FakeNC._n}"
         FakeNC.existing.add(tid)
         FakeNC.created.append(tid)
-        FakeNC.create_calls.append({
-            "instructions": developer_instructions,
-            "extra_mcp_servers": extra_mcp_servers,
-        })
+        FakeNC.create_calls.append(
+            {
+                "instructions": developer_instructions,
+                "extra_mcp_servers": extra_mcp_servers,
+            }
+        )
         return {"thread": {"id": tid}}
 
     async def list_threads(self, limit=100):
-        return {"data": [{"id": t, "preview": f"preview {t}", "createdAt": 1}
-                         for t in sorted(FakeNC.existing)]}
+        return {
+            "data": [
+                {"id": t, "preview": f"preview {t}", "createdAt": 1}
+                for t in sorted(FakeNC.existing)
+            ]
+        }
 
     async def start_turn(self, thread_id, text=None, input=None):
         return {"id": "turn-1"}
@@ -76,12 +82,12 @@ class FakeNC:
             await FakeNC.turn_gate.wait()
         if FakeNC.fail_turns:
             raise RuntimeError("model exploded")
-        return {"turn": {"id": "turn-1"}, "items": [],
-                "agent_messages": [FakeNC.reply]}
+        return {"turn": {"id": "turn-1"}, "items": [], "agent_messages": [FakeNC.reply]}
 
     def notifications(self, thread_id):
         async def gen():
             yield ("turn/completed", {"turn": {"id": "turn-1"}})
+
         return gen()
 
     async def read_thread(self, thread_id, include_turns=True):
@@ -100,8 +106,7 @@ def _rpc(client, method, params=None, req_id=1, agent_key="main-thread"):
 
 
 def _call_tool(client, name, arguments, agent_key="main-thread"):
-    r = _rpc(client, "tools/call", {"name": name, "arguments": arguments},
-             agent_key=agent_key)
+    r = _rpc(client, "tools/call", {"name": name, "arguments": arguments}, agent_key=agent_key)
     assert r.status_code == 200, r.text
     body = r.json()
     result = body["result"]
@@ -149,17 +154,19 @@ class AgentsTest(unittest.TestCase):
 
     def test_new_threads_get_agents_server_and_instructions(self):
         import asyncio as aio
+
         nc = FakeNC()
         aio.run(R._resolve_or_create(nc, "local-xyz", approvals=False))
         call = FakeNC.create_calls[-1]
         self.assertIn("agents", call["extra_mcp_servers"])
         self.assertEqual(
-            call["extra_mcp_servers"]["agents"]["http_headers"][A.AGENT_HEADER],
-            "local-xyz")
+            call["extra_mcp_servers"]["agents"]["http_headers"][A.AGENT_HEADER], "local-xyz"
+        )
         self.assertIn("spawn_agent", call["instructions"])
 
     def test_new_threads_skip_agents_server_when_disabled(self):
         import asyncio as aio
+
         os.environ.pop("NANOCODEX_AGENTS_URL", None)
         nc = FakeNC()
         aio.run(R._resolve_or_create(nc, "local-xyz", approvals=False))
@@ -178,9 +185,11 @@ class AgentsTest(unittest.TestCase):
         self.assertEqual(names, ["spawn_agent", "send_to_agent", "list_agents", "wait_agent"])
 
     def test_notification_gets_202(self):
-        r = self.client.post("/agents/mcp",
-                             json={"jsonrpc": "2.0", "method": "notifications/initialized"},
-                             headers={A.AGENT_HEADER: "main-thread"})
+        r = self.client.post(
+            "/agents/mcp",
+            json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+            headers={A.AGENT_HEADER: "main-thread"},
+        )
         self.assertEqual(r.status_code, 202)
 
     def test_unknown_tool_is_rpc_level_error(self):
@@ -190,8 +199,11 @@ class AgentsTest(unittest.TestCase):
     # ── spawn / two-way comms ───────────────────────────────────────────
 
     def test_spawn_wait_returns_report_and_binds_subthread(self):
-        payload, is_err = _call_tool(self.client, "spawn_agent",
-                                     {"task": "count some stars", "name": "counter", "wait": True})
+        payload, is_err = _call_tool(
+            self.client,
+            "spawn_agent",
+            {"task": "count some stars", "name": "counter", "wait": True},
+        )
         self.assertFalse(is_err)
         self.assertEqual(payload["status"], "idle")
         self.assertEqual(payload["result"], "sub-agent report: done")
@@ -203,8 +215,8 @@ class AgentsTest(unittest.TestCase):
         # sub-thread got its own agents server + subagent preamble
         call = FakeNC.create_calls[-1]
         self.assertEqual(
-            call["extra_mcp_servers"]["agents"]["http_headers"][A.AGENT_HEADER],
-            payload["agentId"])
+            call["extra_mcp_servers"]["agents"]["http_headers"][A.AGENT_HEADER], payload["agentId"]
+        )
         self.assertIn("You are subagent 'counter'", call["instructions"])
         # a consumed (waited-on) report is NOT also announced to the parent
         self.assertEqual(A.registry.inbox_size("codex-main"), 0)
@@ -220,6 +232,7 @@ class AgentsTest(unittest.TestCase):
             # let the announce step run
             await asyncio.sleep(0.05)
             return out
+
         asyncio.run(scenario())
         self.assertEqual(A.registry.inbox_size("codex-main"), 1)
         self.assertEqual(FakeNC.steered, [])
@@ -232,6 +245,7 @@ class AgentsTest(unittest.TestCase):
                 if FakeNC.steered:
                     break
                 await asyncio.sleep(0.01)
+
         asyncio.run(scenario())
         self.assertEqual(FakeNC.steered[0][0], "codex-main")
         self.assertIn("[subagent report]", FakeNC.steered[0][1])
@@ -239,19 +253,20 @@ class AgentsTest(unittest.TestCase):
 
     def test_failed_turn_reports_failure(self):
         FakeNC.fail_turns = True
-        payload, is_err = _call_tool(self.client, "spawn_agent",
-                                     {"task": "explode", "wait": True})
+        payload, is_err = _call_tool(self.client, "spawn_agent", {"task": "explode", "wait": True})
         self.assertFalse(is_err)  # structured failure, not a dead tool call
         self.assertEqual(payload["status"], "failed")
         self.assertIn("model exploded", payload["error"])
 
     def test_child_sends_message_to_parent(self):
-        payload, _ = _call_tool(self.client, "spawn_agent",
-                                {"task": "t", "wait": True})
+        payload, _ = _call_tool(self.client, "spawn_agent", {"task": "t", "wait": True})
         child = payload["agentId"]
-        out, is_err = _call_tool(self.client, "send_to_agent",
-                                 {"agent_id": "parent", "message": "need input"},
-                                 agent_key=child)
+        out, is_err = _call_tool(
+            self.client,
+            "send_to_agent",
+            {"agent_id": "parent", "message": "need input"},
+            agent_key=child,
+        )
         self.assertFalse(is_err)
         self.assertEqual(out["delivered"], "queued")  # parent idle → inbox
         notes = A.registry.drain_inbox("codex-main")
@@ -261,8 +276,9 @@ class AgentsTest(unittest.TestCase):
     def test_parent_sends_to_idle_child_and_gets_reply(self):
         payload, _ = _call_tool(self.client, "spawn_agent", {"task": "t", "wait": True})
         FakeNC.reply = "the reply"
-        out, is_err = _call_tool(self.client, "send_to_agent",
-                                 {"agent_id": payload["agentId"], "message": "follow up"})
+        out, is_err = _call_tool(
+            self.client, "send_to_agent", {"agent_id": payload["agentId"], "message": "follow up"}
+        )
         self.assertFalse(is_err)
         self.assertEqual(out["status"], "idle")
         self.assertEqual(out["result"], "the reply")
@@ -272,28 +288,32 @@ class AgentsTest(unittest.TestCase):
         async def scenario():
             FakeNC.turn_gate = asyncio.Event()  # keep the child turn in flight
             out = await A._tool_spawn("main-thread", {"task": "long task"})
-            res = await A._tool_send("main-thread", {
-                "agent_id": out["agentId"], "message": "hurry up", "wait": False})
+            res = await A._tool_send(
+                "main-thread", {"agent_id": out["agentId"], "message": "hurry up", "wait": False}
+            )
             self.assertEqual(res["delivered"], "steered")
-            self.assertEqual(FakeNC.steered[-1],
-                             (out["threadId"], "hurry up"))
+            self.assertEqual(FakeNC.steered[-1], (out["threadId"], "hurry up"))
             FakeNC.turn_gate.set()
             await A.registry.wait_idle(out["agentId"], timeout=5)
+
         asyncio.run(scenario())
 
     def test_send_to_unknown_or_foreign_agent_errors(self):
         payload, _ = _call_tool(self.client, "spawn_agent", {"task": "t", "wait": True})
-        _, is_err = _call_tool(self.client, "send_to_agent",
-                               {"agent_id": payload["agentId"], "message": "hi"},
-                               agent_key="someone-else")
+        _, is_err = _call_tool(
+            self.client,
+            "send_to_agent",
+            {"agent_id": payload["agentId"], "message": "hi"},
+            agent_key="someone-else",
+        )
         self.assertTrue(is_err)
-        _, is_err = _call_tool(self.client, "send_to_agent",
-                               {"agent_id": "nope", "message": "hi"})
+        _, is_err = _call_tool(self.client, "send_to_agent", {"agent_id": "nope", "message": "hi"})
         self.assertTrue(is_err)
 
     def test_list_and_wait(self):
-        payload, _ = _call_tool(self.client, "spawn_agent",
-                                {"task": "t", "name": "worker", "wait": True})
+        payload, _ = _call_tool(
+            self.client, "spawn_agent", {"task": "t", "name": "worker", "wait": True}
+        )
         out, _ = _call_tool(self.client, "list_agents", {})
         self.assertEqual([a["name"] for a in out["agents"]], ["worker"])
         self.assertNotIn("parent", out)  # main threads have no parent
@@ -306,8 +326,9 @@ class AgentsTest(unittest.TestCase):
 
     def test_depth_limit_blocks_subagent_spawn(self):
         payload, _ = _call_tool(self.client, "spawn_agent", {"task": "t", "wait": True})
-        out, is_err = _call_tool(self.client, "spawn_agent", {"task": "nested"},
-                                 agent_key=payload["agentId"])
+        out, is_err = _call_tool(
+            self.client, "spawn_agent", {"task": "nested"}, agent_key=payload["agentId"]
+        )
         self.assertTrue(is_err)
         self.assertIn("depth limit", out["error"])
 
@@ -330,8 +351,7 @@ class AgentsTest(unittest.TestCase):
             _, is_err = _call_tool(self.client, "spawn_agent", {"task": "t"})
             self.assertTrue(is_err)
             FakeNC.fail_create = False
-            payload, is_err = _call_tool(self.client, "spawn_agent",
-                                         {"task": "t", "wait": True})
+            payload, is_err = _call_tool(self.client, "spawn_agent", {"task": "t", "wait": True})
             self.assertFalse(is_err)
             self.assertEqual(payload["status"], "idle")
         finally:
@@ -341,11 +361,11 @@ class AgentsTest(unittest.TestCase):
         async def scenario():
             FakeNC.turn_gate = asyncio.Event()
             out = await A._tool_spawn("main-thread", {"task": "long"})
-            res = await A._tool_wait("main-thread",
-                                     {"agent_id": out["agentId"], "timeout_sec": 0})
+            res = await A._tool_wait("main-thread", {"agent_id": out["agentId"], "timeout_sec": 0})
             self.assertEqual(res["status"], "running")
             FakeNC.turn_gate.set()
             await A.registry.wait_idle(out["agentId"], timeout=5)
+
         asyncio.run(scenario())
 
     def test_steer_failure_queues_message_for_next_turn(self):
@@ -354,8 +374,9 @@ class AgentsTest(unittest.TestCase):
             out = await A._tool_spawn("main-thread", {"task": "long"})
             await asyncio.sleep(0)  # let the first turn actually start
             FakeNC.fail_steer = True
-            res = await A._tool_send("main-thread", {
-                "agent_id": out["agentId"], "message": "note me", "wait": False})
+            res = await A._tool_send(
+                "main-thread", {"agent_id": out["agentId"], "message": "note me", "wait": False}
+            )
             self.assertEqual(res["delivered"], "queued")
             self.assertEqual(A.registry.inbox_size(out["threadId"]), 1)
             FakeNC.fail_steer = False
@@ -363,40 +384,62 @@ class AgentsTest(unittest.TestCase):
             await A.registry.wait_idle(out["agentId"], timeout=5)
             FakeNC.turn_gate = None
             # the queued note rides along with the agent's next turn input
-            await A._tool_send("main-thread", {
-                "agent_id": out["agentId"], "message": "again", "wait": True})
+            await A._tool_send(
+                "main-thread", {"agent_id": out["agentId"], "message": "again", "wait": True}
+            )
             sent = FakeNC.turn_texts[-1][1]
             self.assertIn("note me", sent)
             self.assertIn("again", sent)
+
         asyncio.run(scenario())
 
     def test_spawn_from_unresolvable_thread_errors_with_hint(self):
         # A header key with no binding that is also not a codex thread id —
         # the post-restart case; reports could never be delivered back.
-        out, is_err = _call_tool(self.client, "spawn_agent", {"task": "t"},
-                                 agent_key="ghost-key")
+        out, is_err = _call_tool(self.client, "spawn_agent", {"task": "t"}, agent_key="ghost-key")
         self.assertTrue(is_err)
         self.assertIn("AGUI_BINDINGS_PATH", out["error"])
         self.assertEqual(FakeNC.created, [])
 
     def test_missing_header_errors(self):
-        r = self.client.post("/agents/mcp", json={
-            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-            "params": {"name": "spawn_agent", "arguments": {"task": "t"}}})
+        r = self.client.post(
+            "/agents/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "spawn_agent", "arguments": {"task": "t"}},
+            },
+        )
         result = r.json()["result"]
         self.assertTrue(result["isError"])
 
     # ── router integration ──────────────────────────────────────────────
 
     def test_next_turn_flushes_parent_inbox_as_steer(self):
-        A.registry.inbox_push("codex-main", {
-            "from": "agent-x", "name": "worker", "kind": "report",
-            "text": "all done", "error": False, "ts": 0})
-        r = self.client.post("/agui", json={
-            "threadId": "main-thread", "runId": "r1", "state": {},
-            "messages": [{"id": "m1", "role": "user", "content": "hi"}],
-            "tools": [], "context": [], "forwardedProps": {},
-        })
+        A.registry.inbox_push(
+            "codex-main",
+            {
+                "from": "agent-x",
+                "name": "worker",
+                "kind": "report",
+                "text": "all done",
+                "error": False,
+                "ts": 0,
+            },
+        )
+        r = self.client.post(
+            "/agui",
+            json={
+                "threadId": "main-thread",
+                "runId": "r1",
+                "state": {},
+                "messages": [{"id": "m1", "role": "user", "content": "hi"}],
+                "tools": [],
+                "context": [],
+                "forwardedProps": {},
+            },
+        )
         self.assertEqual(r.status_code, 200)
         self.assertIn("RUN_FINISHED", r.text)
         self.assertEqual(len(FakeNC.steered), 1)
@@ -411,18 +454,26 @@ class AgentsTest(unittest.TestCase):
         payload, _ = _call_tool(self.client, "spawn_agent", {"task": "t", "wait": True})
         R._active.add(payload["threadId"])  # as if its background turn is live
         try:
-            r = self.client.post("/agui", json={
-                "threadId": payload["threadId"], "runId": "r1", "state": {},
-                "messages": [{"id": "m1", "role": "user", "content": "hi"}],
-                "tools": [], "context": [], "forwardedProps": {},
-            })
+            r = self.client.post(
+                "/agui",
+                json={
+                    "threadId": payload["threadId"],
+                    "runId": "r1",
+                    "state": {},
+                    "messages": [{"id": "m1", "role": "user", "content": "hi"}],
+                    "tools": [],
+                    "context": [],
+                    "forwardedProps": {},
+                },
+            )
             self.assertEqual(r.status_code, 409)
         finally:
             R._active.discard(payload["threadId"])
 
     def test_thread_list_annotates_subagents(self):
-        payload, _ = _call_tool(self.client, "spawn_agent",
-                                {"task": "t", "name": "worker", "wait": True})
+        payload, _ = _call_tool(
+            self.client, "spawn_agent", {"task": "t", "name": "worker", "wait": True}
+        )
         r = self.client.get("/agui/threads")
         rows = {t["id"]: t for t in r.json()["threads"]}
         sub = rows[payload["threadId"]]
@@ -441,6 +492,7 @@ class AgentsTest(unittest.TestCase):
 
 def _app():
     from fastapi import FastAPI
+
     app = FastAPI()
     app.include_router(R.router)
     app.include_router(A.agents_router)
