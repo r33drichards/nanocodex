@@ -143,6 +143,7 @@ jobs:
       # attic client install is a cache hit. Never fails the job; skips on
       # fork PRs (no secret).
       - name: attic cache — background uploader (non-blocking)
+        continue-on-error: true
         env:
           ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
         run: |

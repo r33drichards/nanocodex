@@ -91,6 +91,7 @@ jobs:
       # Background attic uploader (see ghcr.yml) — overlaps the build, never
       # blocks, skips on fork PRs.
       - name: attic cache — background uploader (non-blocking)
+        continue-on-error: true
         env:
           ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
         run: |
