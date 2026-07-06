@@ -46,8 +46,21 @@ AGENT_HEADER = "X-Nanocodex-Agent"
 # sub-agents cannot spawn their own (raise to allow nesting).
 MAX_DEPTH = int(os.environ.get("AGUI_AGENT_MAX_DEPTH", "1"))
 MAX_CHILDREN = int(os.environ.get("AGUI_AGENT_MAX_CHILDREN", "8"))
+# Global ceiling on live sub-agents across ALL parents — MAX_CHILDREN caps one
+# spawner, this caps the whole bridge so N threads can't each open MAX_CHILDREN
+# and exhaust the box. Counts only non-failed agents.
+MAX_TOTAL = int(os.environ.get("AGUI_AGENT_MAX_TOTAL", "32"))
 TURN_TIMEOUT = float(os.environ.get("AGUI_AGENT_TURN_TIMEOUT", "600"))
 DEFAULT_WAIT_SECS = 120.0
+# The GET /agui/agents registry dump is cross-thread observability with no auth
+# model on the bridge; keep it OFF unless an operator explicitly opts in, so
+# enabling sub-agents doesn't also publish every thread's id/task to anonymous
+# callers. Independent of AGENTS_URL: even with the feature on, default is 404.
+AGENTS_DEBUG_ENV = "AGUI_AGENTS_DEBUG"
+
+
+def agents_debug_enabled() -> bool:
+    return os.environ.get(AGENTS_DEBUG_ENV, "").strip().lower() in ("1", "true", "yes")
 
 
 def agents_enabled() -> bool:
@@ -138,6 +151,10 @@ class AgentRegistry:
 
     def children_of(self, parent_key: str) -> list[AgentInfo]:
         return [a for a in self._agents.values() if a.parent_key == parent_key]
+
+    def live_count(self) -> int:
+        """Non-failed agents across all parents (for the global MAX_TOTAL cap)."""
+        return len([a for a in self._agents.values() if a.status != "failed"])
 
     def touch(self, info: AgentInfo) -> None:
         info.updated_at = time.time()
@@ -487,6 +504,10 @@ async def _tool_spawn(caller_key: str, args: dict) -> dict:
     # Failed spawns/turns don't count against the cap — only live children do.
     if len([c for c in children if c.status != "failed"]) >= MAX_CHILDREN:
         raise ToolError(f"subagent limit reached (AGUI_AGENT_MAX_CHILDREN={MAX_CHILDREN})")
+    # Global backstop: one spawner is capped by MAX_CHILDREN, but many spawners
+    # together are capped here so the bridge can't be swamped bridge-wide.
+    if registry.live_count() >= MAX_TOTAL:
+        raise ToolError(f"global subagent limit reached (AGUI_AGENT_MAX_TOTAL={MAX_TOTAL})")
 
     nc = await Nanocodex.connect()
     if _router()._codex_id_for(caller_key) is None:
@@ -702,6 +723,12 @@ async def agents_mcp(request: Request):
     (no SSE, no session ids — the spec allows plain application/json), with
     the calling thread identified by the X-Nanocodex-Agent header codex sends
     on every request (static per-thread config, not model-controlled)."""
+    # Dormant unless the operator opted in. When off, this endpoint must not
+    # answer at all — it drives spawn/send/list on the in-memory registry and
+    # trusts a caller-supplied header for identity, so a live endpoint on a
+    # public bridge port would let anonymous callers operate the agents API.
+    if not agents_enabled():
+        return JSONResponse(_rpc_error(None, -32601, "agents disabled"), status_code=404)
     caller_key = request.headers.get(AGENT_HEADER, "")
     try:
         body = await request.json()
@@ -720,7 +747,11 @@ async def agents_mcp(request: Request):
 
 @agents_router.get("/agui/agents")
 async def list_registry():
-    """Debug/observability: the full sub-agent registry."""
+    """Debug/observability: the full sub-agent registry. Cross-thread data with
+    no auth, so it is 404 unless an operator sets AGUI_AGENTS_DEBUG — enabling
+    sub-agents alone never exposes it."""
+    if not agents_debug_enabled():
+        return JSONResponse({"error": "not found"}, status_code=404)
     return {
         "agents": [
             {

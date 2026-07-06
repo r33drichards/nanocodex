@@ -482,12 +482,36 @@ class AgentsTest(unittest.TestCase):
         self.assertEqual(sub["agent"]["status"], "idle")
         self.assertNotIn("parentId", rows["codex-main"])
 
-    def test_registry_debug_endpoint(self):
+    def test_registry_debug_endpoint_gated_off_by_default(self):
+        # The cross-thread registry dump is 404 unless AGUI_AGENTS_DEBUG is set,
+        # so enabling sub-agents alone never publishes thread ids/tasks.
         _call_tool(self.client, "spawn_agent", {"task": "t", "wait": True})
+        os.environ.pop("AGUI_AGENTS_DEBUG", None)
         r = self.client.get("/agui/agents")
-        agents = r.json()["agents"]
-        self.assertEqual(len(agents), 1)
-        self.assertEqual(agents[0]["parentThreadId"], "codex-main")
+        self.assertEqual(r.status_code, 404)
+
+    def test_registry_debug_endpoint_when_enabled(self):
+        _call_tool(self.client, "spawn_agent", {"task": "t", "wait": True})
+        os.environ["AGUI_AGENTS_DEBUG"] = "1"
+        try:
+            r = self.client.get("/agui/agents")
+            self.assertEqual(r.status_code, 200)
+            agents = r.json()["agents"]
+            self.assertEqual(len(agents), 1)
+            self.assertEqual(agents[0]["parentThreadId"], "codex-main")
+        finally:
+            os.environ.pop("AGUI_AGENTS_DEBUG", None)
+
+    def test_agents_mcp_endpoint_404_when_disabled(self):
+        # Feature dormant → the MCP endpoint must not answer (defense in depth).
+        os.environ.pop("NANOCODEX_AGENTS_URL", None)
+        try:
+            r = self.client.post(
+                "/agents/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+            )
+            self.assertEqual(r.status_code, 404)
+        finally:
+            os.environ["NANOCODEX_AGENTS_URL"] = AGENTS_URL
 
 
 def _app():
