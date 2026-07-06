@@ -16,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .agents import agents_router
+from .craftos_solve import craftos_router
 from .router import router
 
 app = FastAPI(title="nanocodex AG-UI bridge", version="0.1.0")
@@ -34,6 +35,11 @@ app.include_router(router)
 # plus the registry debug endpoint. Threads only dial it when
 # NANOCODEX_AGENTS_URL is set (see agui/agents.py).
 app.include_router(agents_router)
+# CraftOS solver: POST /agui/craftos/solve runs a validation "stop hook" loop
+# (drive codex to write /work/turtle.lua, validate it against a caller-supplied
+# CraftOS sim each turn until SIM_RESULT: PASS or the budget runs out) and
+# publishes the result to a pollable S3 URL. See agui/craftos_solve.py.
+app.include_router(craftos_router)
 
 
 @app.get("/healthz")
