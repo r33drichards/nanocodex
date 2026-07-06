@@ -35,9 +35,15 @@ routes every write into the per-session overlay, which is exactly what makes
 self-editing skills impossible — the container's /codex-home/skills never
 sees the write. Dropping the mount makes fs ops hit the real container
 filesystem, gated by /opt/languages/policies-skills.json (rw /work, rw
-/codex-home/skills, ro /opt/languages). Trade-offs: /work is SHARED across
-threads (persist it with a volume, not snapshots) and there is no per-thread
-fs time travel. Codex picks up SKILL.md changes on new sessions.
+/codex-home/skills, ro /opt/languages). Skills are two-tier: the repo-shipped
+skills are baked READ-ONLY at /opt/languages/skills (image updates refresh
+them, agents can only consult them), while /codex-home/skills is the agent's
+OWN writable library — shipped empty and declared as its own volume, so
+agent-authored skills persist across restarts and image updates without the
+bundled set and the volume ever overwriting each other. Trade-offs: /work is
+SHARED across threads (persist it with a volume, not snapshots) and there is
+no per-thread fs time travel. Codex picks up SKILL.md changes on new
+sessions.
 """
 
 from __future__ import annotations
@@ -58,7 +64,10 @@ REMOTE_TOKEN_ENV = "NANOCODEX_MCP_V8_TOKEN"
 LANGUAGES_POLICIES_JSON = "/opt/languages/policies.json"
 SKILLS_POLICIES_JSON = "/opt/languages/policies-skills.json"
 LANGUAGES_BOOTSTRAP = "/opt/languages/bootstrap.js"
+# The agent's own writable, volume-persisted skill library …
 SKILLS_DIR = "/codex-home/skills"
+# … and the repo-shipped read-only skills baked into the image.
+BUNDLED_SKILLS_DIR = "/opt/languages/skills"
 
 # (name, wasm path, memory cap, stub description). mcp-v8 exposes each loaded
 # module as a `runjs__wasm__<name>` STUB tool (--wasm-stubs, default on) so the
@@ -140,6 +149,10 @@ LANGUAGES_INSTRUCTIONS = (
     "runs on), reconnected-docs, and re-plethora. fs.readdir/fs.readFile it as "
     "ground truth for exact API/peripheral/Lua-compat behaviour (see the "
     "cc-tweaked skill; codebases/README.md lists pinned revs).\n"
+    "SKILLS: the bundled reference skills (cc-tweaked, craftos-sim, "
+    "poll-ccraft-lua, l-systems, skill-editor) are READ-ONLY at "
+    "/opt/languages/skills/<name>/SKILL.md — fs.readFile the relevant one "
+    "before doing related work.\n"
     "CRITICAL: every run_js call runs in a FRESH V8 isolate — loaded helpers do "
     "NOT persist between calls (only /work does). So load the bootstrap AND "
     "call the engine IN THE SAME run_js code block, e.g. as ONE call:\n"
@@ -181,17 +194,22 @@ SKILLS_INSTRUCTIONS = (
     "map of every signature). Threads also get REAL filesystem "
     "access to two writable areas: /work — a "
     "persistent scratch space shared by all threads (namespace your files) — "
-    "and /codex-home/skills — this agent's own skill library. Each skill is "
-    "a directory /codex-home/skills/<name>/ containing a SKILL.md with YAML "
-    "frontmatter (name, description) followed by markdown instructions. You "
-    "can read, improve, and create your own skills with fs.readFile / "
-    "fs.writeFile / fs.mkdir / fs.readdir; changes take effect for NEW "
-    "sessions. Bundled reference skills you should consult (read their "
-    "SKILL.md before doing related work): poll-ccraft-lua (deploy Lua to a "
+    "and /codex-home/skills — this agent's OWN skill library, on a "
+    "persistence volume, so skills you author survive restarts and image "
+    "updates. Each skill is a directory <skills-dir>/<name>/ containing a "
+    "SKILL.md with YAML frontmatter (name, description) followed by markdown "
+    "instructions. Create and improve your own skills with fs.writeFile / "
+    "fs.mkdir under /codex-home/skills; changes take effect for NEW "
+    "sessions. BUNDLED SKILLS: the skills shipped with the image live "
+    "READ-ONLY at /opt/languages/skills — consult them (read their SKILL.md "
+    "before doing related work): poll-ccraft-lua (deploy Lua to a "
     "ComputerCraft turtle/computer you can't type into, via a mutable paste "
     "store), cc-tweaked (CC:Tweaked/ComputerCraft Lua API reference), "
     "craftos-sim (the craftos() node/turtle/GPS API), l-systems, skill-editor. "
-    "List them with fs.readdir('/codex-home/skills').\n"
+    "Writes there are denied — to customize a bundled skill, copy it into "
+    "/codex-home/skills and edit the copy. List both with "
+    "fs.readdir('/opt/languages/skills') and "
+    "fs.readdir('/codex-home/skills').\n"
     "REFERENCE CODEBASES: a READ-ONLY mount at /opt/languages/codebases/ holds "
     "the full upstream source of four CC/CraftOS projects — craftos2 (the "
     "CraftOS-PC emulator the `craftos` engine is built from), cobalt (the Lua "
@@ -293,7 +311,9 @@ def sandbox_for(
     if preset == "skills":
         # Real filesystem (no per-thread snapshot mount — a mount would send
         # writes into the overlay instead of /codex-home/skills; see module
-        # docstring). Policy: rw /work + rw /codex-home/skills, ro engines.
+        # docstring). Policy: rw /work + rw /codex-home/skills (the agent's
+        # own volume-persisted library), ro /opt/languages (engines + the
+        # repo-shipped skills).
         args = [
             "--policies-json",
             SKILLS_POLICIES_JSON,

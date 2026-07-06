@@ -381,10 +381,17 @@
             cp ${languagesCodebasesReadme} $out/opt/languages/codebases/README.md
             chmod -R u+w $out/opt/languages/codebases
 
-            # Pre-packaged codex skills — languages images only (merged into
-            # /codex-home next to the rootfs-provided config.toml).
-            mkdir -p $out/codex-home
-            cp -r ${./languages/skills} $out/codex-home/skills
+            # Repo-shipped codex skills — read-only under /opt/languages like
+            # the engines and codebases (the skills-preset rego only allows
+            # read ops on this prefix, so agents can consult but never edit
+            # them, and image updates always deliver the current set). The
+            # agent's own WRITABLE library is /codex-home/skills — shipped
+            # EMPTY so a persistence volume mounted there never shadows the
+            # bundled skills and the bundled skills never clobber
+            # agent-authored ones.
+            cp -r ${./languages/skills} $out/opt/languages/skills
+            chmod -R u+w $out/opt/languages/skills
+            mkdir -p $out/codex-home/skills
           '';
 
           mkSupervisordConf = programs: pkgs.writeTextDir "etc/supervisord.conf" (''
@@ -471,7 +478,7 @@
             ln -sf /run/secrets/ws_token app/secrets/ws-token
           '';
 
-          mkStandaloneImage = { name, programs, extraContents ? [ ], basePorts ? [ 4500 8080 ], extraPorts ? [ ], extraFakeRoot ? "", extraEnv ? [ ], modelProvider ? "azure", model ? "gpt-5.4" }:
+          mkStandaloneImage = { name, programs, extraContents ? [ ], basePorts ? [ 4500 8080 ], extraPorts ? [ ], extraFakeRoot ? "", extraEnv ? [ ], extraVolumes ? [ ], modelProvider ? "azure", model ? "gpt-5.4" }:
             pkgs.dockerTools.streamLayeredImage {
               inherit name;
               tag = "latest";
@@ -509,7 +516,8 @@
                 ] ++ extraEnv;
                 ExposedPorts = builtins.listToAttrs
                   (map (p: { name = "${toString p}/tcp"; value = { }; }) (basePorts ++ extraPorts));
-                Volumes."/data" = { };
+                Volumes = builtins.listToAttrs
+                  (map (p: { name = p; value = { }; }) ([ "/data" ] ++ extraVolumes));
               };
             };
 
@@ -556,8 +564,11 @@
             extraFakeRoot = bridgeFakeRoot + frontendFakeRoot + slackbotFakeRoot;
           };
           # standalone-frontend + the language engines, with the `skills`
-          # sandbox preset (real-fs /work + self-editable /codex-home/skills)
-          # and Ollama Cloud glm-5.2 as the default model.
+          # sandbox preset: bundled skills read-only at /opt/languages/skills,
+          # the agent's own writable library at /codex-home/skills on its own
+          # volume (so agent-authored skills persist across image updates and
+          # never collide with the bundled set), and Ollama Cloud glm-5.2 as
+          # the default model.
           standaloneLanguagesImage = mkStandaloneImage {
             name = "ghcr.io/r33drichards/nanocodex-standalone-languages";
             programs = [ mcpV8Program codexProgram bridgeProgram frontendProgram ];
@@ -565,6 +576,7 @@
             extraPorts = [ 8130 3000 ];
             extraFakeRoot = bridgeFakeRoot + frontendFakeRoot;
             extraEnv = [ "NANOCODEX_SANDBOX=skills" ];
+            extraVolumes = [ "/codex-home/skills" ];
             modelProvider = "ollama-cloud";
             model = "glm-5.2";
           };
@@ -603,6 +615,9 @@
 
           # The base runtime + the WASM language engines at /opt/languages
           # (formerly Dockerfile.languages; now pure nix via languagesOpt).
+          # /codex-home/skills (the writable agent skill library, shipped
+          # empty by languagesOpt) is declared as a volume so skills authored
+          # under the `skills` preset persist across container replacement.
           languagesImage = pkgs.dockerTools.streamLayeredImage {
             name = "ghcr.io/r33drichards/nanocodex-languages";
             tag = "latest";
@@ -617,7 +632,9 @@
             fakeRootCommands = ''
               chmod 1777 tmp
             '';
-            config = baseImageConfig;
+            config = baseImageConfig // {
+              Volumes."/codex-home/skills" = { };
+            };
           };
 
           # ── Dedicated public mcp-v8 service image ───────────────────────

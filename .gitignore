@@ -4,3 +4,12 @@ __pycache__/
 client/.venv/
 .DS_Store
 scratch.md
+.devloop/
+# dev-loop.sh runtime state (CODEX_HOME=./codex-home); config.toml stays tracked
+codex-home/sqlite/
+codex-home/sessions/
+codex-home/skills/
+codex-home/.tmp/
+codex-home/*.sqlite*
+codex-home/.personality_migration
+codex-home/installation_id

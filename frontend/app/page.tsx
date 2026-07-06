@@ -136,6 +136,29 @@ export default function Page() {
     void refresh();
   }, [agent, refresh]);
 
+  // Mid-turn steer: inject text into the thread's in-flight turn via the
+  // bridge side-channel (codex `turn/steer`). Addressed by `agent.threadId` —
+  // the id the active run started under, which the bridge bound to a codex
+  // thread at run start, so it resolves whenever a turn is actually running.
+  const steer = useCallback(
+    async (text: string) => {
+      try {
+        const r = await fetch(
+          `${BRIDGE}/agui/threads/${encodeURIComponent(agent.threadId)}/steer`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text }),
+          },
+        );
+        return r.ok;
+      } catch {
+        return false; // bridge unreachable — caller re-queues the text
+      }
+    },
+    [agent],
+  );
+
   const attachments = useMemo(() => new SimpleImageAttachmentAdapter(), []);
 
   const runtime = useAgUiRuntime({
@@ -154,7 +177,7 @@ export default function Page() {
           <ThreadMetaContext.Provider value={threadMeta}>
             <ThreadListSidebar />
           </ThreadMetaContext.Provider>
-          <NanocodexThread onRunComplete={onRunComplete} />
+          <NanocodexThread onRunComplete={onRunComplete} steer={steer} />
         </div>
       </div>
     </AssistantRuntimeProvider>
