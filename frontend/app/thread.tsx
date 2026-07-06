@@ -8,8 +8,11 @@ import {
   ThreadPrimitive,
   useAssistantRuntime,
   useComposerRuntime,
+  useThreadListItem,
 } from "@assistant-ui/react";
 import {
+  createContext,
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -17,6 +20,15 @@ import {
   type ClipboardEvent,
   type ComponentType,
 } from "react";
+
+// ── sub-agent thread metadata (from GET /agui/threads) ──────────────────────
+// A sub-agent thread carries its parent thread id and live agent status; the
+// sidebar uses this to nest it under the parent with a status dot.
+export type ThreadMeta = {
+  parentId?: string;
+  agent?: { agentId: string; name: string; task: string; status: string };
+};
+export const ThreadMetaContext = createContext<Record<string, ThreadMeta>>({});
 
 // ── run_js tool card ─────────────────────────────────────────────────────────
 // The bridge forwards the raw MCP result (`{content:[{text:"{...}"}]}`); unwrap
@@ -161,8 +173,81 @@ function PlotlyToolCard({ toolName, args, argsText }: any) {
   );
 }
 
+// ── sub-agent tool cards (agents.spawn_agent, agents.send_to_agent, …) ──────
+// The `agents` MCP server returns a JSON payload as its text content; unwrap
+// it and show the interesting fields instead of the raw run_js-style dump.
+const AGENT_TOOL_LABELS: Record<string, string> = {
+  spawn_agent: "spawn subagent",
+  send_to_agent: "message subagent",
+  list_agents: "list subagents",
+  wait_agent: "wait for subagent",
+};
+
+function agentPayload(result: unknown): any {
+  if (result == null) return null;
+  let obj: any = result;
+  if (typeof obj === "string") {
+    try {
+      obj = JSON.parse(obj);
+    } catch {
+      return { note: obj };
+    }
+  }
+  if (obj && Array.isArray(obj.content)) {
+    const text = obj.content
+      .map((c: any) => (typeof c?.text === "string" ? c.text : ""))
+      .join("");
+    try {
+      return JSON.parse(text);
+    } catch {
+      return { note: text };
+    }
+  }
+  return obj;
+}
+
+function AgentToolCard({ toolName, args, argsText, result, status }: any) {
+  const bare = String(toolName ?? "").split(".").pop() ?? "";
+  const label = AGENT_TOOL_LABELS[bare] ?? bare;
+  const done = status?.type === "complete";
+  const payload = done ? agentPayload(result) : null;
+  const request = args?.task ?? args?.message ?? "";
+  const target = args?.name ?? args?.agent_id ?? payload?.agentId ?? "";
+  const agents: any[] = Array.isArray(payload?.agents) ? payload.agents : [];
+  return (
+    <div className="agent-card" data-testid="agent-card" data-tool={toolName}>
+      <div className="agent-card-head">
+        <span className="agent-card-icon">◆</span>
+        <span className="agent-card-label">{label}</span>
+        {target ? <span className="agent-card-target">{target}</span> : null}
+        <span className="agent-card-status">
+          {payload?.error ? "error" : payload?.status ?? (done ? "" : "…")}
+        </span>
+      </div>
+      {request ? <div className="agent-card-req">{request}</div> : null}
+      {payload?.error ? <div className="agent-card-err">{payload.error}</div> : null}
+      {payload?.result || payload?.note ? (
+        <div className="agent-card-result">{payload.result ?? payload.note}</div>
+      ) : null}
+      {agents.length ? (
+        <ul className="agent-card-list">
+          {agents.map((a) => (
+            <li key={a.agentId}>
+              <span className={`agent-dot ${a.status}`} /> {a.name} — {a.status}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
 const TOOL_RENDERERS: Record<string, ComponentType<any>> = {
   render_plotly: PlotlyToolCard,
+  spawn_agent: AgentToolCard,
+  send_to_agent: AgentToolCard,
+  list_agents: AgentToolCard,
+  wait_agent: AgentToolCard,
 };
 
 function ToolCallPart(props: any) {
@@ -370,10 +455,29 @@ export function NanocodexThread({ onRunComplete }: { onRunComplete: () => void }
 }
 
 // ── thread list sidebar (codex threads = source of truth) ────────────────────
+// Sub-agent threads (ThreadMetaContext) render nested under their parent —
+// page.tsx orders the flat list parent → children — with a live status dot.
 function ThreadListItem() {
+  const meta = useContext(ThreadMetaContext);
+  const id = useThreadListItem((s) => s.id);
+  const m = meta[id];
+  const isSub = Boolean(m?.parentId);
   return (
-    <ThreadListItemPrimitive.Root className="tli" data-testid="thread-list-item">
-      <ThreadListItemPrimitive.Trigger className="tli-trigger">
+    <ThreadListItemPrimitive.Root
+      className={isSub ? "tli tli-sub" : "tli"}
+      data-testid={isSub ? "agent-thread-list-item" : "thread-list-item"}
+    >
+      <ThreadListItemPrimitive.Trigger
+        className="tli-trigger"
+        title={m?.agent ? m.agent.task : undefined}
+      >
+        {m?.agent ? (
+          <span
+            className={`agent-dot ${m.agent.status}`}
+            data-testid="agent-status-dot"
+            data-status={m.agent.status}
+          />
+        ) : null}
         <ThreadListItemPrimitive.Title fallback="Untitled thread" />
       </ThreadListItemPrimitive.Trigger>
     </ThreadListItemPrimitive.Root>

@@ -258,6 +258,40 @@ the `skills` sandbox preset — real-fs `/work` plus a self-editable skill
 library at `/codex-home/skills` — and Ollama Cloud `glm-5.2` as the default
 model.
 
+### Sub-agent sessions (openclaw-style)
+
+Every thread is a session, and — modeled on openclaw's `sessions_spawn` /
+`sessions_send` — the agent in one thread can spawn sub-agents in their own
+threads and talk to them both ways. The AG-UI bridge hosts a tiny
+streamable-HTTP MCP server (`POST /agents/mcp`); when `NANOCODEX_AGENTS_URL`
+is set (the address codex should dial to reach the bridge — baked as
+`http://127.0.0.1:8130/agents/mcp` in the standalone images, where they share
+a container), every new thread declares it as its `agents` MCP server with the
+thread's identity pinned in a static `X-Nanocodex-Agent` header.
+
+The model gets four tools:
+
+| tool | what it does |
+|---|---|
+| `spawn_agent {task, name?, wait?}` | new codex thread + background turn; `wait:true` blocks and returns the report |
+| `send_to_agent {agent_id, message, wait?}` | steers a busy sub-agent mid-turn / starts a turn on an idle one; `agent_id:"parent"` messages the spawner |
+| `list_agents {}` | children (+ parent) with live status and last result |
+| `wait_agent {agent_id}` | block until the sub-agent finishes its current turn |
+
+Two-way comms is announce-based like openclaw: when a sub-agent's turn
+completes (or it calls `send_to_agent {"agent_id": "parent"}`), the note is
+**steered into the parent's turn if one is live**, else queued in an inbox the
+bridge flushes into the parent's next turn. The web frontend shows sub-agent
+threads nested under their parent in the sidebar with a live status dot — and
+you can open one and talk to the sub-agent directly.
+
+Guardrails (env): `AGUI_AGENT_MAX_DEPTH` (default 1 — sub-agents can't spawn
+their own), `AGUI_AGENT_MAX_CHILDREN` (default 8 per thread),
+`AGUI_AGENT_TURN_TIMEOUT` (default 600s per sub-agent turn). The registry
+(parent/child links, inboxes) is bridge-memory like the rest of the AG-UI
+state: after a restart the sub-threads still exist and resume as ordinary
+codex threads, they just lose their grouping and any undelivered notes.
+
 ### Naive passthrough & custom per-thread policies
 
 The `sandbox` field is a layered passthrough to that `mcp_servers.js` config,

@@ -19,6 +19,12 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from ..core import Nanocodex, RpcError
+from .agents import (
+    AGENTS_INSTRUCTIONS,
+    agents_server_decl,
+    format_notes as format_agent_notes,
+    registry as agents_registry,
+)
 from .mapper import (
     RunState,
     map_notification,
@@ -222,14 +228,23 @@ async def _resolve_or_create(nc: Nanocodex, agui_thread_id: str, approvals: bool
     except RpcError:
         pass
     sid = ThreadStore.new_session_id()
+    # Generative UI: the `ui` MCP server's render_* tools are no-op acks
+    # whose ARGUMENTS the frontend renders (see agui/ui_tools.py).
+    extra_mcp_servers = {"ui": ui_mcp_server("prompt" if approvals else "approve")}
+    instructions = instructions_for(NANOCODEX_INSTRUCTIONS)
+    # Sub-agents (openclaw-style sessions): when NANOCODEX_AGENTS_URL is set,
+    # the thread gets the bridge-hosted `agents` MCP server, addressed back to
+    # this thread via the X-Nanocodex-Agent header (see agui/agents.py).
+    agents_decl = agents_server_decl(agui_thread_id, approvals)
+    if agents_decl is not None:
+        extra_mcp_servers["agents"] = agents_decl
+        instructions += AGENTS_INSTRUCTIONS
     # The sandbox preset (and instruction addendum) is deploy-time config —
     # NANOCODEX_SANDBOX matches the runtime image this instance runs.
     resp = await nc.create_thread(
         sandbox=sandbox_for(sid, approvals), cwd="/tmp",
-        developer_instructions=instructions_for(NANOCODEX_INSTRUCTIONS),
-        # Generative UI: the `ui` MCP server's render_* tools are no-op acks
-        # whose ARGUMENTS the frontend renders (see agui/ui_tools.py).
-        extra_mcp_servers={"ui": ui_mcp_server("prompt" if approvals else "approve")},
+        developer_instructions=instructions,
+        extra_mcp_servers=extra_mcp_servers,
     )
     codex_tid = resp["thread"]["id"]
     store.bind(agui_thread_id, codex_tid, sid)
@@ -272,6 +287,15 @@ async def agui(request: Request):
             notif = nc.notifications(codex_tid)
             turn = await nc.start_turn(codex_tid, input=user_input)
             turn_id = turn.get("id")
+            # Sub-agent reports that arrived while this thread was idle are
+            # steered into the turn now, so the model sees them alongside the
+            # new user input (see agui/agents.py).
+            pending_notes = agents_registry.drain_inbox(codex_tid)
+            if pending_notes:
+                try:
+                    await nc.steer_turn(codex_tid, format_agent_notes(pending_notes))
+                except Exception:
+                    agents_registry.requeue_inbox(codex_tid, pending_notes)
             async for method, params in notif:
                 if method == _APPROVAL:
                     yield encoder.encode(CustomEvent(name="approval_request", value={
@@ -309,7 +333,11 @@ async def list_threads(limit: int = 100):
         page = await nc.list_threads(limit=limit)
     finally:
         await nc.close()
-    return {"threads": thread_summaries(page.get("data", []))}
+    summaries = thread_summaries(page.get("data", []))
+    # Sub-agent threads get parentId + live agent status so the frontend can
+    # nest them under their parent in the sidebar.
+    agents_registry.annotate_summaries(summaries)
+    return {"threads": summaries}
 
 
 @router.get("/agui/threads/{agui_thread_id}/history")
