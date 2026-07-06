@@ -130,6 +130,20 @@ class SandboxPresetTest(_EnvMixin):
         cfg = spec.to_config()
         self.assertEqual(cfg["mcp_servers"]["js"], spec.raw)
 
+    def test_remote_preset_bearer_token_optional(self):
+        os.environ["NANOCODEX_SANDBOX"] = "remote"
+        os.environ[REMOTE_URL_ENV] = "http://mcp-v8.internal:8080/mcp"
+        # No token -> no Authorization header (private/internal remote).
+        os.environ.pop("NANOCODEX_MCP_V8_TOKEN", None)
+        spec = sandbox_for("sid-5")
+        self.assertNotIn("Authorization", spec.raw["http_headers"])
+        # Token set -> bearer header alongside the session id (authed remote).
+        os.environ["NANOCODEX_MCP_V8_TOKEN"] = "s3cret"
+        spec = sandbox_for("sid-5")
+        self.assertEqual(spec.raw["http_headers"]["Authorization"], "Bearer s3cret")
+        self.assertEqual(spec.raw["http_headers"]["X-MCP-Session-Id"], "sid-5")
+        os.environ.pop("NANOCODEX_MCP_V8_TOKEN", None)
+
     def test_remote_preset_approvals(self):
         os.environ["NANOCODEX_SANDBOX"] = "remote"
         os.environ[REMOTE_URL_ENV] = "http://h:1/mcp"

@@ -615,10 +615,76 @@
             '';
             config = baseImageConfig;
           };
+
+          # ── Dedicated public mcp-v8 service image ───────────────────────
+          # A lean image running ONLY mcp-v8 (no codex/bridge/frontend/
+          # supervisord) as a single-node stateful streamable-HTTP MCP
+          # server on :8080 (path /mcp). This is the backend a Railway
+          # PUBLIC domain points at, and exactly what NANOCODEX_MCP_V8_URL
+          # (the client's `remote` sandbox preset) connects to. Per-session
+          # heap+fs state is keyed off the X-MCP-Session-Id header, so one
+          # service is multi-tenant-safe: each session id gets an isolated
+          # heap snapshot + /work filesystem under /data.
+          #
+          # SECURITY: mcp-v8 has NO enforcing authentication — `--jwks-url`
+          # only LOGS the JWT verification result, it never rejects a
+          # request (see server/src/mcp.rs capture_mcp_headers &
+          # mcp_sse.rs). run_js executes arbitrary JS and fetch() is
+          # allow-all (policies/fetch.rego). So an OPEN public URL lets
+          # anyone execute code and reach any URL from this container. If
+          # that is not acceptable, keep the service on Railway PRIVATE
+          # networking (reach it at <svc>.railway.internal:8080, no public
+          # domain) or front it with a bearer-checking reverse proxy and
+          # set NANOCODEX_MCP_V8_TOKEN on the client. The four hardening
+          # flags below are on by default as a sane public baseline; heap
+          # persistence disables WebAssembly (SnapshotCreator isolate), so
+          # this is the PLAIN variant — deploy nanocodex-languages' :8080
+          # instead if you need the WASM engines.
+          mcpV8ServiceImage = pkgs.dockerTools.streamLayeredImage {
+            name = "ghcr.io/r33drichards/nanocodex-mcp-v8-service";
+            tag = "latest";
+            contents = [
+              rootfs
+              pkgs.cacert
+              pkgs.bashInteractive
+              pkgs.coreutils
+              pkgs.curl
+            ];
+            fakeRootCommands = ''
+              chmod 1777 tmp
+              mkdir -p data/heaps data/fs data/sessions
+            '';
+            config = {
+              Entrypoint = [ "/usr/local/bin/mcp-v8" ];
+              Cmd = [
+                "--http-port" "8080"
+                "--bind-host" "0.0.0.0"
+                "--heap-store" "dir"
+                "--heap-dir" "/data/heaps"
+                "--fs-store" "dir"
+                "--fs-dir" "/data/fs"
+                "--session-db-path" "/data/sessions"
+                "--policies-json" "/app/policies/policies.json"
+                # Sane public hardening defaults (all opt-in in mcp-v8).
+                "--harden-freeze-ops"
+                "--harden-neutralize-proxy-details"
+                "--harden-neutralize-introspection"
+                "--harden-remove-bootstrap"
+              ];
+              Env = [
+                "PATH=/usr/local/bin:/bin"
+                "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
+                "NIX_SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
+              ];
+              ExposedPorts."8080/tcp" = { };
+              Volumes."/data" = { };
+            };
+          };
         in
         {
           inherit codex-app-server image;
           mcp-v8 = mcpV8;
+          mcp-v8-service = mcpV8ServiceImage;
           bridge = bridgeEnv;
           slackbot = slackbotApp;
           frontend = frontendApp;
