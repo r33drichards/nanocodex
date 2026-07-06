@@ -17,6 +17,13 @@ AG-UI client ──POST /agui (RunAgentInput)──► bridge ──ws JSON-RPC�
   session id). In-memory by design; see "Persistence" below.
 - `router.py` — `POST /agui` (one turn = one SSE stream), plus
   `POST /agui/threads/{id}/steer` (mid-turn steering side-channel).
+- `agents.py` — openclaw-style sub-agent sessions: a bridge-hosted
+  streamable-HTTP MCP server (`POST /agents/mcp`) giving each thread
+  `spawn_agent` / `send_to_agent` / `list_agents` / `wait_agent` tools, an
+  in-memory parent↔child registry, and announce-back delivery (steer into a
+  live parent turn, else inbox flushed on the parent's next turn). Enabled
+  when `NANOCODEX_AGENTS_URL` is set (the URL codex dials to reach the
+  bridge; see the root README "Sub-agent sessions").
 - `app.py` — the FastAPI app; also serves a build-free reference web client
   (`web/index.html`) at `/` for browser testing.
 - See `PHASE0.md` for the pinned `ag-ui-protocol==0.1.19` event surface and the

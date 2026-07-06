@@ -104,6 +104,50 @@ body {
   background: #f0f0f7;
 }
 
+/* sub-agent threads: nested under their parent, with a live status dot */
+.tli-sub {
+  margin-left: 14px;
+  border-left: 2px solid #d6d3f0;
+}
+
+.tli-sub .tli-trigger {
+  padding-left: 0.5rem;
+}
+
+.agent-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+  background: #b6b3d8;
+  vertical-align: baseline;
+}
+
+.agent-dot.running,
+.agent-dot.spawning {
+  background: #2fa564;
+  animation: agent-pulse 1.2s ease-in-out infinite;
+}
+
+.agent-dot.idle {
+  background: #8b86e0;
+}
+
+.agent-dot.failed {
+  background: #d64545;
+}
+
+@keyframes agent-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
 /* ── thread / messages ─────────────────────────────────────────────────── */
 .thread {
   flex: 1;
@@ -371,6 +415,68 @@ body {
   color: #888;
   font-size: 13px;
   padding: 0.4rem 0.5rem;
+}
+
+/* ── sub-agent tool cards (spawn_agent, send_to_agent, …) ──────────────── */
+.agent-card {
+  border: 1px solid #cfe5d8;
+  border-radius: 8px;
+  margin: 0.5rem 0;
+  padding: 0.5rem 0.75rem;
+  background: #f2faf5;
+  font-size: 13px;
+}
+
+.agent-card-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+}
+
+.agent-card-icon {
+  color: #2fa564;
+}
+
+.agent-card-target {
+  font-family: ui-monospace, monospace;
+  font-weight: 400;
+  color: #444;
+}
+
+.agent-card-status {
+  margin-left: auto;
+  font-weight: 400;
+  color: #666;
+  font-size: 12px;
+}
+
+.agent-card-req {
+  margin-top: 0.35rem;
+  color: #333;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.agent-card-result {
+  margin-top: 0.4rem;
+  border-top: 1px dashed #cfe5d8;
+  padding-top: 0.4rem;
+  color: #0a5a3a;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.agent-card-err {
+  margin-top: 0.4rem;
+  color: #b02a2a;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.agent-card-list {
+  margin: 0.4rem 0 0;
+  padding-left: 1.1rem;
 }
 
 /* ── run_js tool-call card ─────────────────────────────────────────────── */

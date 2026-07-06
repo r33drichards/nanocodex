@@ -15,6 +15,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from .agents import agents_router
 from .router import router
 
 app = FastAPI(title="nanocodex AG-UI bridge", version="0.1.0")
@@ -29,6 +30,10 @@ app.add_middleware(
 )
 
 app.include_router(router)
+# Sub-agent sessions: the bridge-hosted `agents` MCP server (streamable HTTP)
+# plus the registry debug endpoint. Threads only dial it when
+# NANOCODEX_AGENTS_URL is set (see agui/agents.py).
+app.include_router(agents_router)
 
 
 @app.get("/healthz")

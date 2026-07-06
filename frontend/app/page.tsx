@@ -15,7 +15,7 @@ import {
 } from "@assistant-ui/react-ag-ui";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { NanocodexThread, ThreadListSidebar } from "./thread";
+import { NanocodexThread, ThreadListSidebar, ThreadMetaContext, type ThreadMeta } from "./thread";
 
 // The AG-UI agent (HttpAgent) runs client-side and talks to the bridge.
 // NEXT_PUBLIC_BRIDGE_URL is inlined at build: a full origin makes the browser
@@ -38,17 +38,43 @@ export default function Page() {
   const agent = agentRef.current;
 
   const [threads, setThreads] = useState<ExternalStoreThreadData<"regular">[]>([]);
+  const [threadMeta, setThreadMeta] = useState<Record<string, ThreadMeta>>({});
   const [currentThreadId, setCurrentThreadId] = useState<string | undefined>(undefined);
 
   const refresh = useCallback(async () => {
     try {
       const r = await fetch(`${BRIDGE}/agui/threads`);
       const d = await r.json();
+      const rows: any[] = d.threads ?? [];
+      // Sub-agent threads carry a parentId: order the flat list parent →
+      // descendants (depth-first, so nested sub-agents stay under their
+      // ancestor), so the sidebar can render them nested. Children whose
+      // parent isn't in the list (e.g. paged out) stay top-level.
+      const listed = new Set(rows.map((t) => t.id));
+      const childrenOf = new Map<string, any[]>();
+      for (const t of rows) {
+        if (t.parentId && listed.has(t.parentId)) {
+          childrenOf.set(t.parentId, [...(childrenOf.get(t.parentId) ?? []), t]);
+        }
+      }
+      const ordered: any[] = [];
+      const visit = (t: any) => {
+        ordered.push(t);
+        for (const c of childrenOf.get(t.id) ?? []) visit(c);
+      };
+      for (const t of rows) {
+        if (!(t.parentId && listed.has(t.parentId))) visit(t);
+      }
+      const meta: Record<string, ThreadMeta> = {};
+      for (const t of ordered) {
+        if (t.parentId || t.agent) meta[t.id] = { parentId: t.parentId, agent: t.agent };
+      }
+      setThreadMeta(meta);
       setThreads(
-        (d.threads ?? []).map((t: any) => ({
+        ordered.map((t: any) => ({
           status: "regular" as const,
           id: t.id,
-          title: t.title,
+          title: t.agent?.name ?? t.title,
         })),
       );
     } catch {
@@ -57,6 +83,10 @@ export default function Page() {
   }, []);
   useEffect(() => {
     void refresh();
+    // Sub-agents spawn and finish while no frontend run is active, so poll:
+    // this is what makes them (and their live status) show up in the sidebar.
+    const timer = setInterval(() => void refresh(), 4000);
+    return () => clearInterval(timer);
   }, [refresh]);
 
   const threadList: UseAgUiThreadListAdapter = useMemo(
@@ -144,7 +174,9 @@ export default function Page() {
           <span className="app-sub">assistant-ui · AG-UI · codex threads</span>
         </header>
         <div className="app-body">
-          <ThreadListSidebar />
+          <ThreadMetaContext.Provider value={threadMeta}>
+            <ThreadListSidebar />
+          </ThreadMetaContext.Provider>
           <NanocodexThread onRunComplete={onRunComplete} steer={steer} />
         </div>
       </div>
