@@ -64,7 +64,7 @@ class SandboxPresetTest(_EnvMixin):
         modules = [spec.args[i + 1] for i, a in enumerate(spec.args) if a == "--wasm-module"]
         self.assertEqual(
             sorted(m.split("=")[0] for m in modules),
-            ["autolisp", "craftos", "lua", "minizinc", "picat", "tla"],
+            ["craftos", "picat", "tla"],
         )
         for m in modules:
             path = m.split("=")[1].split(":")[0]
@@ -88,7 +88,7 @@ class SandboxPresetTest(_EnvMixin):
         self.assertNotIn("--heap-store", spec.args)
         # Engines still present, skills policy document selected.
         modules = [spec.args[i + 1] for i, a in enumerate(spec.args) if a == "--wasm-module"]
-        self.assertEqual(len(modules), 6)
+        self.assertEqual(len(modules), 3)
         pj = spec.args[spec.args.index("--policies-json") + 1]
         self.assertEqual(pj, "/opt/languages/policies-skills.json")
         self.assertIn("sid-5", spec.args)  # --session-id value
@@ -100,7 +100,7 @@ class SandboxPresetTest(_EnvMixin):
         stub_descs = [
             spec.args[i + 1] for i, a in enumerate(spec.args) if a == "--wasm-stub-description"
         ]
-        self.assertEqual(len(stub_descs), 6)
+        self.assertEqual(len(stub_descs), 3)
         self.assertTrue(any(d.startswith("craftos=") for d in stub_descs))
 
     def test_skills_instructions_mention_skill_editing(self):
