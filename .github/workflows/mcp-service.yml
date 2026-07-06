@@ -1,0 +1,223 @@
+name: build and deploy mcp-v8 services
+
+# Standalone build+deploy lifecycle for the two mcp-v8 service images:
+#   - mcp-v8-service            (plain)
+#   - mcp-v8-languages-service  (stateless, WASM engines, public run_js)
+#
+# These used to be built by the main app pipeline (.github/workflows/ghcr.yml),
+# whose `ghcr-<ref>` concurrency group cancels in-flight builds on every push.
+# App-PR churn therefore kept cancelling the (slow, Rust+WASM) mcp build. This
+# workflow gives the mcp services their OWN concurrency group so the two
+# lifecycles never cancel each other.
+#
+# main pushes publish `latest` + `<sha>`; pull requests publish `pr-<number>` +
+# `<sha>`. Fork PRs are skipped (no ghcr write access). Every image is a nix
+# flake attr — the flake is the single source of truth (no Dockerfiles).
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  pull-requests: write
+
+# A DIFFERENT group from ghcr.yml (`ghcr-<ref>`) so the app pipeline and the
+# mcp pipeline never cancel each other.
+concurrency:
+  group: mcp-service-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+  # Railway service that hosts the stateless public languages run_js service.
+  # MAINTAINER: create the dedicated Railway service (from
+  # ghcr.io/r33drichards/nanocodex-mcp-v8-languages-service:latest, public
+  # domain on 8080, NO volume — it is stateless) and paste its service id here.
+  # While empty, the deploy job self-skips with a notice.
+  MCP_SERVICE_ID: f3a01210-dfd9-4bd9-b3a2-b45f9943e674
+  # Shared Railway environment id (same as .github/workflows/deploy.yml).
+  MCP_ENVIRONMENT_ID: 54e43c1d-7bd9-4ae7-8776-4f3304a5aab3
+
+jobs:
+  # Build both mcp-v8 service attrs ONCE per arch and push each per-arch image.
+  # Mirrors ghcr.yml's proven build step (free-disk, nix-installer,
+  # cache-nix-action keyed on flake.lock, skopeo copy with a v2 registries.conf)
+  # but over a FIXED attr list instead of a path-filtered plan.
+  build:
+    # PR builds need to push to ghcr, which fork PRs' tokens can't do.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Two full Rust workspaces compile in the nix store; stock runners run
+      # out of disk without this.
+      - name: free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /opt/hostedtoolcache /usr/share/dotnet /opt/ghc
+          df -h /
+
+      - uses: DeterminateSystems/nix-installer-action@v16
+
+      # Cross-run /nix/store cache keyed on flake.lock. Its own key namespace
+      # (`mcp-<arch>-`) so it doesn't fight ghcr.yml's cache for budget.
+      - uses: nix-community/cache-nix-action@v6
+        with:
+          primary-key: mcp-${{ matrix.arch }}-${{ hashFiles('flake.lock') }}
+          restore-prefixes-first-match: mcp-${{ matrix.arch }}-
+          gc-max-store-size-linux: 4500M
+          purge: true
+          purge-prefixes: mcp-${{ matrix.arch }}-
+          purge-created: 0
+          purge-primary-key: never
+
+      - name: nix build + push mcp-v8 service images (skopeo)
+        run: |
+          # The runner ships a v1-format /etc/containers/registries.conf that
+          # nix's skopeo refuses to parse — point it at a minimal v2 one, and
+          # use --dest-creds instead of a login step (no auth-file handling).
+          echo 'unqualified-search-registries = ["docker.io"]' > /tmp/registries.conf
+          for attr in mcp-v8-service mcp-v8-languages-service; do
+            img="${IMAGE}-${attr}"
+            nix build ".#${attr}" --print-build-logs
+            # streamLayeredImage output is a script that writes a docker-archive
+            # tar to stdout; docker-archive sources must be seekable, so land it
+            # in a file first, and delete it after pushing (the tars are large).
+            ./result > /tmp/mcp-image.tar
+            nix run nixpkgs#skopeo -- --registries-conf /tmp/registries.conf \
+              copy --insecure-policy \
+              --dest-creds "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" \
+              docker-archive:/tmp/mcp-image.tar \
+              "docker://${img}:${{ github.sha }}-${{ matrix.arch }}"
+            rm -f /tmp/mcp-image.tar
+            df -h /
+          done
+
+  manifest:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: assemble and push multi-arch manifests
+        run: |
+          # main: latest + sha; PR: pr-<n> (mutable, tracks the PR) + sha.
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            tags="pr-${{ github.event.number }} ${{ github.sha }}"
+          else
+            tags="latest ${{ github.sha }}"
+          fi
+          echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+          for attr in mcp-v8-service mcp-v8-languages-service; do
+            suffix="-${attr}"
+            for tag in $tags; do
+              podman manifest create "${IMAGE}${suffix}:${tag}"
+              podman manifest add "${IMAGE}${suffix}:${tag}" "docker://${IMAGE}${suffix}:${{ github.sha }}-amd64"
+              podman manifest add "${IMAGE}${suffix}:${tag}" "docker://${IMAGE}${suffix}:${{ github.sha }}-arm64"
+              podman manifest push --all "${IMAGE}${suffix}:${tag}" "docker://${IMAGE}${suffix}:${tag}"
+            done
+          done
+
+  # Deploy the freshly-built languages service to its dedicated Railway service.
+  # Mirrors .github/workflows/deploy.yml (Project-Access-Token header,
+  # serviceInstanceUpdate -> serviceInstanceDeployV2). push/workflow_dispatch
+  # only — never on PRs. Deploys the immutable `<sha>` tag the build just pushed.
+  deploy:
+    needs: manifest
+    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      IMAGE_BASE: ghcr.io/${{ github.repository }}-mcp-v8-languages-service
+    steps:
+      - name: Guard — MCP_SERVICE_ID must be set
+        id: guard
+        run: |
+          # Until the maintainer creates the dedicated Railway service and fills
+          # MCP_SERVICE_ID into this workflow's env, there is nowhere to deploy.
+          # Skip cleanly rather than fail. (MCP_SERVICE_ID is a workflow-level
+          # env var, inherited into every step's shell.)
+          if [ -z "$MCP_SERVICE_ID" ]; then
+            echo "::notice::MCP_SERVICE_ID is empty — create the dedicated Railway service and set it in .github/workflows/mcp-service.yml. Skipping deploy."
+            echo "deploy=false" | tee -a "$GITHUB_OUTPUT"
+          else
+            echo "deploy=true" | tee -a "$GITHUB_OUTPUT"
+          fi
+
+      - name: Require RAILWAY_TOKEN
+        if: ${{ steps.guard.outputs.deploy == 'true' }}
+        run: |
+          if [ -z "$RAILWAY_TOKEN" ]; then
+            echo "::error::RAILWAY_TOKEN secret is empty. Add a Railway project token (Project Settings -> Tokens) as the RAILWAY_TOKEN repo secret." >&2
+            exit 1
+          fi
+
+      - name: Deploy to Railway
+        if: ${{ steps.guard.outputs.deploy == 'true' }}
+        env:
+          TAG: ${{ github.sha }}
+          SERVICE_ID: ${{ env.MCP_SERVICE_ID }}
+          ENVIRONMENT_ID: ${{ env.MCP_ENVIRONMENT_ID }}
+        run: |
+          set -euo pipefail
+          API="https://backboard.railway.com/graphql/v2"
+          IMAGE="$IMAGE_BASE:$TAG"
+          echo "Deploying $IMAGE to service $SERVICE_ID (env $ENVIRONMENT_ID)"
+
+          # 1) Point the service instance at the new image. Build the JSON body
+          #    with `jq -nc` so the values are escaped safely.
+          UPDATE_QUERY='mutation($s:String!,$e:String!,$img:String!){ serviceInstanceUpdate(serviceId:$s, environmentId:$e, input:{ source:{ image:$img } }) }'
+          UPDATE_BODY=$(jq -nc \
+            --arg q "$UPDATE_QUERY" \
+            --arg s "$SERVICE_ID" \
+            --arg e "$ENVIRONMENT_ID" \
+            --arg img "$IMAGE" \
+            '{query:$q, variables:{s:$s, e:$e, img:$img}}')
+          echo "== serviceInstanceUpdate =="
+          curl -sS --fail-with-body -X POST "$API" \
+            -H "Project-Access-Token: $RAILWAY_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data "$UPDATE_BODY"
+          echo
+
+          # 2) Trigger the deployment of the updated service instance.
+          DEPLOY_QUERY='mutation($s:String!,$e:String!){ serviceInstanceDeployV2(serviceId:$s, environmentId:$e) }'
+          DEPLOY_BODY=$(jq -nc \
+            --arg q "$DEPLOY_QUERY" \
+            --arg s "$SERVICE_ID" \
+            --arg e "$ENVIRONMENT_ID" \
+            '{query:$q, variables:{s:$s, e:$e}}')
+          echo "== serviceInstanceDeployV2 =="
+          DEPLOY_RESP=$(curl -sS --fail-with-body -X POST "$API" \
+            -H "Project-Access-Token: $RAILWAY_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data "$DEPLOY_BODY") || DEPLOY_RESP=""
+          echo "$DEPLOY_RESP"
+
+          # Fallback: if serviceInstanceDeployV2 isn't a known field on this
+          # API, redeploy the service instance instead.
+          if echo "$DEPLOY_RESP" | grep -qiE 'Cannot query field .serviceInstanceDeployV2.|unknown field'; then
+            echo "== serviceInstanceDeployV2 unavailable — falling back to serviceInstanceRedeploy =="
+            REDEPLOY_QUERY='mutation($s:String!,$e:String!){ serviceInstanceRedeploy(serviceId:$s, environmentId:$e) }'
+            REDEPLOY_BODY=$(jq -nc \
+              --arg q "$REDEPLOY_QUERY" \
+              --arg s "$SERVICE_ID" \
+              --arg e "$ENVIRONMENT_ID" \
+              '{query:$q, variables:{s:$s, e:$e}}')
+            curl -sS --fail-with-body -X POST "$API" \
+              -H "Project-Access-Token: $RAILWAY_TOKEN" \
+              -H "Content-Type: application/json" \
+              --data "$REDEPLOY_BODY"
+            echo
+          fi
+
+          echo "Deploy request submitted for $IMAGE"
